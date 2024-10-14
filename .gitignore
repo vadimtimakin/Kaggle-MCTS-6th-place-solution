@@ -5,3 +5,7 @@ solver_checkpoint.pickle
 notes.txt
 draft.ipynb
 main.ipynb
+cat_mapping.pickle
+catcols.pickle
+openfe_tmp_data.feather
+submission.parquet

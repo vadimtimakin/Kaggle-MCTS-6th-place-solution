@@ -16,19 +16,20 @@ from catboost import CatBoostRegressor, CatBoostClassifier
 from sklearn.metrics import mean_squared_error
 from sklearn.model_selection import StratifiedGroupKFold
 
-from openfe import transform
-
 from typing import Tuple, Union
 
-try:
-    import kaggle_evaluation.mcts_inference_server
-except ImportError:
-    pass
+import sys
+sys.path.append('/home/toefl/K/MCTS/')
+sys.path.append('/kaggle/input/openfe-modified')
+
+from openfe import transform
+import kaggle_evaluation.mcts_inference_server
 
 
 # --- Run mode ---
 
 IS_TRAIN = True
+LOCAL = True
 
 
 # --- Config ---
@@ -46,17 +47,20 @@ class Config:
     
     # Paths
     
-    path_to_train_dataset = '/home/toefl/K/MCTS/dataset/train.csv'
+    path_to_train_dataset = '/home/toefl/K/MCTS/dataset/train.csv' if LOCAL else '/kaggle/input/um-game-playing-strength-of-mcts-variants/train.csv' 
     path_to_save_data_checkpoint = 'data_checkpoint.pickle'     # Drop columns, categorical columns, etc.
-    path_to_load_data_checkpoint = '/kaggle/input/mcts-solution/data_checkpoint.pickle'
+    path_to_load_data_checkpoint = 'data_checkpoint.pickle' if LOCAL else '/kaggle/input/mcts-solution-checkpoint/data_checkpoint.pickle'
     path_to_save_solver_checkpoint = 'solver_checkpoint.pickle' # Models, weights, etc.
-    path_to_load_solver_checkpoint = '/kaggle/input/mcts-solution/solver_checkpoint.pickle'
+    path_to_load_solver_checkpoint = 'solver_checkpoint.pickle' if LOCAL else '/kaggle/input/mcts-solution-checkpoint/solver_checkpoint.pickle'
+    path_to_load_features = 'feature.pickle' if LOCAL else '/kaggle/input/mcts-solution-checkpoint/feature.pickle'
     
     # Training
 
     task = "regression"
     
     n_splits = 10
+
+    n_openfe_features = 100
     
     catboost_params = {
         'iterations': 30000,
@@ -270,7 +274,6 @@ class Dataset:
         
         if self.config.is_train:
             cat_mapping = {feature: pd.CategoricalDtype(categories=list(set(df[feature]))) for feature in df.columns[df.dtypes == object]}
-            # df = df.astype(cat_mapping)
             catcols = list(cat_mapping.keys())
             catcols = [column for column in catcols if 'tta' not in column]
             self.data_checkpoint["catcols"] += catcols
@@ -360,15 +363,15 @@ class Solver:
 
             # Apply the new features.
 
-            with open('feature.pickle', 'rb') as file:
+            with open(self.config.path_to_load_features, 'rb') as file:
                 ofe_features = pickle.load(file)
 
             X_train = X_train[src_columns]
             X_valid_src = X_valid[src_columns]
             X_valid_tta = X_valid[tta_columns].rename(columns={column: column.replace('tta', 'src') for column in tta_columns})
 
-            X_train, X_valid_src = transform(X_train, X_valid_src, ofe_features[:9], n_jobs=1)
-            _, X_valid_tta = transform(X_train, X_valid_tta, ofe_features[:9], n_jobs=1)
+            X_train, X_valid_src = transform(X_train, X_valid_src, ofe_features[:self.config.n_openfe_features], n_jobs=1)
+            _, X_valid_tta = transform(X_train, X_valid_tta, ofe_features[:self.config.n_openfe_features], n_jobs=1)
 
             X_train = X_train.drop([column for column in X_train.columns if 'index' in column], axis=1)
             X_valid_src = X_valid_src.drop([column for column in X_valid_src.columns if 'index' in column], axis=1)
@@ -512,13 +515,38 @@ class Solver:
                 
         return artifacts
             
-    def predict(self, X: pl.DataFrame, data_checkpoint: dict) -> np.array:
+    def predict(self, X: pd.DataFrame, df_train: pd.DataFrame, data_checkpoint: dict) -> np.array:
         """Inference."""
         
         prediction = np.zeros(len(X))
 
         src_columns = [column for column in X.columns.tolist() if 'tta' not in column]
         tta_columns = [column.replace('src', 'tta') for column in src_columns]
+
+        X_train = df_train[src_columns].rename(columns = lambda x:re.sub('[^A-Za-z0-9_]+', '', x)).reset_index()
+
+        with open(self.config.path_to_load_features, 'rb') as file:
+            ofe_features = pickle.load(file)
+
+        X = X.rename(columns = lambda x:re.sub('[^A-Za-z0-9_]+', '', x)).reset_index()
+        X_valid_src = X[src_columns]
+        X_valid_tta = X[tta_columns].rename(columns={column: column.replace('tta', 'src') for column in tta_columns})
+
+        _, X_valid_src = transform(X_train, X_valid_src, ofe_features[:self.config.n_openfe_features], n_jobs=1)
+        _, X_valid_tta = transform(X_train, X_valid_tta, ofe_features[:self.config.n_openfe_features], n_jobs=1)
+        del X_train
+        
+        X_valid_src = X_valid_src.drop([column for column in X_valid_src.columns if 'index' in column], axis=1)
+        X_valid_tta = X_valid_tta.drop([column for column in X_valid_tta.columns if 'index' in column], axis=1)
+
+        catcols = ['src_p1_selection', 'src_p1_exploration', 'src_p1_playout', 'src_p1_bounds', 
+                   'src_p2_selection', 'src_p2_exploration', 'src_p2_playout', 'src_p2_bounds', 'src_agent1', 'src_agent2']
+
+        cat_mapping = {column: float for column in X_valid_src.columns}
+        for column in catcols: cat_mapping[column] = pd.CategoricalDtype(categories=list(set(X_valid_src[column])))
+
+        X_valid_src = X_valid_src.astype(cat_mapping)
+        X_valid_tta = X_valid_tta.astype(cat_mapping)
         
         for model_name, weight in self.config.weights.items():
             
@@ -529,13 +557,10 @@ class Solver:
             for fold in range(self.config.n_splits):    
 
                 model = self.models[model_name]["models"][fold]
-
-                X_valid_src = X[src_columns]
-                X_valid_tta = X[tta_columns].rename(columns={column: column.replace('tta', 'src') for column in tta_columns})
                     
                 preds_original = model.predict(X_valid_src)
-                preds_tta = model.predict(X_valid_tta) * -1
-                preds = (preds_original + preds_tta) / 2 / self.config.n_splits
+                # preds_tta = model.predict(X_valid_tta) * -1
+                preds = (preds_original + preds_original) / 2 / self.config.n_splits
 
             prediction += np.clip(preds, -1, 1) * weight
             
@@ -568,16 +593,19 @@ if not IS_TRAIN:
     dataset = Dataset(config)
     solver = Solver(config, rerun=False)
 
+    df_train = pl.read_csv(config.path_to_train_dataset)
+    df_train, _ = dataset.get_dataset(df_train)
+
     def predict(test: pl.DataFrame, sample_sub: pl.DataFrame) -> pl.DataFrame:
         """Inference function."""
         
         df, data_checkpoint = dataset.get_dataset(test)
-        preds = solver.predict(df, data_checkpoint)
+        preds = solver.predict(df, df_train, data_checkpoint)
 
         return sample_sub.with_columns(pl.Series('utility_agent1', preds))
     
-
-# --- Run ---
+    
+# # --- Run ---
 
 if IS_TRAIN:
     artifacts = train(rerun=False, oof_features=None)
@@ -588,7 +616,7 @@ else:
     else:
         inference_server.run_local_gateway(
             (
-                '/kaggle/input/um-game-playing-strength-of-mcts-variants/test.csv',
-                '/kaggle/input/um-game-playing-strength-of-mcts-variants/sample_submission.csv'
+                '/home/toefl/K/MCTS/dataset/test.csv' if LOCAL else '/kaggle/input/um-game-playing-strength-of-mcts-variants/test.csv',
+                '/home/toefl/K/MCTS/dataset/sample_submission.csv' if LOCAL else '/kaggle/input/um-game-playing-strength-of-mcts-variants/sample_submission.csv'
             )
         )
