@@ -1,0 +1,7 @@
+catboost_info/
+dataset/
+data_checkpoint.pickle
+solver_checkpoint.pickle
+notes.txt
+draft.ipynb
+main.ipynb
