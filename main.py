@@ -62,7 +62,7 @@ class Config:
     
     n_splits = 10
 
-    n_openfe_features = 15
+    n_openfe_features = 500    
     
     catboost_params = {
         'iterations': 30000,
@@ -366,14 +366,16 @@ class Solver:
             # Apply the new features.
 
             with open(self.config.path_to_load_features, 'rb') as file:
+                operators = ["abs", "log", "sqrt", "square", "sigmoid", "round", "residual", "min", "max", "+", "-", "*", "/"]
                 ofe_features = pickle.load(file)
+                ofe_features = [feature for feature in ofe_features if feature.name in operators]
 
             X_train = X_train[src_columns]
             X_valid_src = X_valid[src_columns]
             X_valid_tta = X_valid[tta_columns].rename(columns={column: column.replace('tta', 'src') for column in tta_columns})
 
-            X_train, X_valid_src = transform(X_train, X_valid_src, ofe_features[:self.config.n_openfe_features], n_jobs=1)
-            _, X_valid_tta = transform(X_train, X_valid_tta, ofe_features[:self.config.n_openfe_features], n_jobs=1)
+            _, X_valid_src = transform(X_train[:10], X_valid_src, ofe_features[:self.config.n_openfe_features], n_jobs=1)
+            X_train, X_valid_tta = transform(X_train, X_valid_tta, ofe_features[:self.config.n_openfe_features], n_jobs=1)
 
             X_train = X_train.drop([column for column in X_train.columns if 'index' in column], axis=1)
             X_valid_src = X_valid_src.drop([column for column in X_valid_src.columns if 'index' in column], axis=1)
@@ -428,7 +430,7 @@ class Solver:
                 preds = preds[0]
             else:
                 preds_original = model.predict(X_valid_src)
-                preds_tta = model.predict(X_valid_tta) * -1
+                # preds_tta = model.predict(X_valid_tta) * -1
                 preds = (preds_original + preds_original) / 2
             
             # Save the scores and the metrics.
@@ -477,11 +479,12 @@ class Solver:
         print("OOF", round(oof_score, 4))
         
         if model_name == "catboost":
-            feature_importances = pl.DataFrame({
+            feature_importances = pd.DataFrame({
                 "feature": X_train.columns,
                 "importance": feature_importances
-            }).sort(by='importance', descending=True)
+            }).sort_values(by='importance', ascending=False)
             print(feature_importances.head(10))
+            feature_importances.to_csv('dataset/feature_importance.csv')
         else:
             feature_importances = None
         
@@ -529,18 +532,17 @@ class Solver:
         src_columns = [column for column in X.columns.tolist() if 'tta' not in column]
         tta_columns = [column.replace('src', 'tta') for column in src_columns]
 
-        X_train = df_train[src_columns].rename(columns = lambda x:re.sub('[^A-Za-z0-9_]+', '', x)).reset_index()
-
         with open(self.config.path_to_load_features, 'rb') as file:
+            operators = ["abs", "log", "sqrt", "square", "sigmoid", "round", "residual", "min", "max", "+", "-", "*", "/"]
             ofe_features = pickle.load(file)
+            ofe_features = [feature for feature in ofe_features if feature.name in operators]
 
         X = X.rename(columns = lambda x:re.sub('[^A-Za-z0-9_]+', '', x)).reset_index()
-        X_valid_src = X[src_columns]
-        X_valid_tta = X[tta_columns].rename(columns={column: column.replace('tta', 'src') for column in tta_columns})
+        X_valid_src = X[src_columns].reset_index()
+        X_valid_tta = X[tta_columns].rename(columns={column: column.replace('tta', 'src') for column in tta_columns}).reset_index()
 
-        _, X_valid_src = transform(X_train, X_valid_src, ofe_features[:self.config.n_openfe_features], n_jobs=1)
-        _, X_valid_tta = transform(X_train, X_valid_tta, ofe_features[:self.config.n_openfe_features], n_jobs=1)
-        del X_train
+        _, X_valid_src = transform(X_valid_src[:1], X_valid_src, ofe_features[:self.config.n_openfe_features], n_jobs=1)
+        _, X_valid_tta = transform(X_valid_tta[:1], X_valid_tta, ofe_features[:self.config.n_openfe_features], n_jobs=1)
         
         X_valid_src = X_valid_src.drop([column for column in X_valid_src.columns if 'index' in column], axis=1)
         X_valid_tta = X_valid_tta.drop([column for column in X_valid_tta.columns if 'index' in column], axis=1)
@@ -566,7 +568,7 @@ class Solver:
                     
                 preds_original = model.predict(X_valid_src)
                 # preds_tta = model.predict(X_valid_tta) * -1
-                preds = (preds_original + preds_original) / 2 / self.config.n_splits
+                preds += (preds_original + preds_original) / 2 / self.config.n_splits
 
             prediction += np.clip(preds, -1, 1) * weight
             
@@ -607,6 +609,7 @@ if not IS_TRAIN:
         
         df, data_checkpoint = dataset.get_dataset(test)
         preds = solver.predict(df, df_train, data_checkpoint)
+
         # preds[df["GameTreeComplexity"] == 0] = 2 * df[df["GameTreeComplexity"] == 0]["AdvantageP1"] - 1
 
         return sample_sub.with_columns(pl.Series('utility_agent1', preds))
