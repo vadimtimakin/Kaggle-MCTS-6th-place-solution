@@ -2,6 +2,7 @@
 
 import re
 import os
+import gc
 import random
 import pickle
 
@@ -19,7 +20,7 @@ from sklearn.model_selection import StratifiedGroupKFold
 from typing import Tuple, Union
 
 import sys
-sys.path.append('/home/toefl/K/MCTS/')
+sys.path.append('/home/toefl/K/MCTS/dataset/')
 sys.path.append('/kaggle/input/openfe-modified')
 
 from openfe import transform
@@ -30,6 +31,7 @@ import kaggle_evaluation.mcts_inference_server
 
 IS_TRAIN = True
 LOCAL = True
+IS_RERUN = False
 
 
 # --- Config ---
@@ -60,7 +62,7 @@ class Config:
     
     n_splits = 10
 
-    n_openfe_features = 100
+    n_openfe_features = 15
     
     catboost_params = {
         'iterations': 30000,
@@ -390,6 +392,8 @@ class Solver:
             X_valid_src = X_valid_src.astype(cat_mapping)
             X_valid_tta = X_valid_tta.astype(cat_mapping)
             X_valid = X_valid.astype(cat_mapping)
+
+            print('Shape with OpenFE features', X_train.shape)
             
             # Create and fit the model.
             
@@ -449,6 +453,8 @@ class Solver:
                     "importance": feature_importances
                 }).sort(by='importance', descending=True)
                 print(fi.head(10))
+            
+            gc.collect()
         
         # Clip final predictions. 
         
@@ -601,14 +607,15 @@ if not IS_TRAIN:
         
         df, data_checkpoint = dataset.get_dataset(test)
         preds = solver.predict(df, df_train, data_checkpoint)
+        # preds[df["GameTreeComplexity"] == 0] = 2 * df[df["GameTreeComplexity"] == 0]["AdvantageP1"] - 1
 
         return sample_sub.with_columns(pl.Series('utility_agent1', preds))
     
-    
-# # --- Run ---
+
+# --- Run ---
 
 if IS_TRAIN:
-    artifacts = train(rerun=False, oof_features=None)
+    artifacts = train(rerun=IS_RERUN, oof_features=None)
 else:
     inference_server = kaggle_evaluation.mcts_inference_server.MCTSInferenceServer(predict)
     if os.getenv('KAGGLE_IS_COMPETITION_RERUN'):
