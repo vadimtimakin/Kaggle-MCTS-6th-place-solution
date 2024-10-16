@@ -62,7 +62,7 @@ class Config:
     
     n_splits = 10
 
-    n_openfe_features = 500    
+    n_openfe_features = 100    
     
     catboost_params = {
         'iterations': 30000,
@@ -144,7 +144,8 @@ class Dataset:
                 pl.col("agent1").alias("agent2"),
                 pl.col("agent2").alias("agent1"),
                 (pl.col("utility_agent1") * -1).alias("utility_agent1"),
-                (1 - pl.col("AdvantageP1")).alias("AdvantageP1")
+                (1 - pl.col("AdvantageP1")).alias("AdvantageP1"),
+                (1 - pl.col("Balance")).alias("Balance")
             ])
 
             df = pl.concat([df, df_mirror])
@@ -182,9 +183,11 @@ class Dataset:
         df = df.with_columns(
             pl.col('AdvantageP1').alias('src_AdvantageP1'),
             (1 - pl.col('AdvantageP1')).alias('tta_AdvantageP1'),
+            pl.col('Balance').alias('src_Balance'),
+            (1 - pl.col('Balance')).alias('tta_Balance'),
         )
 
-        df = df.drop(['AdvantageP1'], strict=False)
+        df = df.drop(['AdvantageP1', 'Balance'], strict=False)
         
         # Split agent string.
 
@@ -430,17 +433,23 @@ class Solver:
                 preds = preds[0]
             else:
                 preds_original = model.predict(X_valid_src)
-                # preds_tta = model.predict(X_valid_tta) * -1
-                preds = (preds_original + preds_original) / 2
+                preds_tta = model.predict(X_valid_tta) * -1
+                preds = (preds_original + preds_tta) / 2
             
             # Save the scores and the metrics.
             
             oof_preds[valid_index] = preds
             oof_labels[valid_index] = Y_valid
 
+            score_original = mean_squared_error(Y_valid, preds_original, squared=False)
+            score_tta = mean_squared_error(Y_valid, preds_tta, squared=False)
             score = mean_squared_error(Y_valid, oof_preds[valid_index], squared=False)
+
             scores.append(score)
-            print(round(score, 4))
+
+            print(round(score_original, 4))
+            print(round(score_tta, 4))
+            print(round(score, 4))    
             
             if not self.rerun:
                 self.models[model_name]["models"][fold] = model

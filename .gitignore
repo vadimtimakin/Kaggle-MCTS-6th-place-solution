@@ -3,7 +3,6 @@ dataset/
 data_checkpoint.pickle
 solver_checkpoint.pickle
 notes.txt
-draft.ipynb
 main.ipynb
 cat_mapping.pickle
 catcols.pickle
