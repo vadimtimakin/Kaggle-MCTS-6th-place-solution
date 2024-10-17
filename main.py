@@ -60,7 +60,7 @@ class Config:
 
     task = "regression"
     
-    n_splits = 10
+    n_splits = 5
 
     n_openfe_features = (9, 100)    
     
@@ -137,18 +137,18 @@ class Dataset:
         
         # Mirror the dataset.
         
-        if self.config.is_train:
-            df_mirror = df.clone()
+        # if self.config.is_train:
+        #     df_mirror = df.clone()
 
-            df_mirror = df_mirror.with_columns([
-                pl.col("agent1").alias("agent2"),
-                pl.col("agent2").alias("agent1"),
-                (pl.col("utility_agent1") * -1).alias("utility_agent1"),
-                (1 - pl.col("AdvantageP1")).alias("AdvantageP1"),
-                (1 - pl.col("Balance")).alias("Balance")
-            ])
+        #     df_mirror = df_mirror.with_columns([
+        #         pl.col("agent1").alias("agent2"),
+        #         pl.col("agent2").alias("agent1"),
+        #         (pl.col("utility_agent1") * -1).alias("utility_agent1"),
+        #         (1 - pl.col("AdvantageP1")).alias("AdvantageP1"),
+        #         (1 - pl.col("Balance")).alias("Balance")
+        #     ])
 
-            df = pl.concat([df, df_mirror])
+        #     df = pl.concat([df, df_mirror])
         
         # Initial data shape.
         
@@ -382,8 +382,8 @@ class Solver:
             X_valid_src = X_valid[src_columns]
             X_valid_tta = X_valid[tta_columns].rename(columns={column: column.replace('tta', 'src') for column in tta_columns})
 
-            _, X_valid_src = transform(X_train[:10], X_valid_src, ofe_features, n_jobs=1)
-            X_train, X_valid_tta = transform(X_train, X_valid_tta, ofe_features, n_jobs=1)
+            # _, X_valid_src = transform(X_train[:10], X_valid_src, ofe_features, n_jobs=1)
+            # X_train, X_valid_tta = transform(X_train, X_valid_tta, ofe_features, n_jobs=1)
 
             X_train = X_train.drop([column for column in X_train.columns if 'index' in column], axis=1)
             X_valid_src = X_valid_src.drop([column for column in X_valid_src.columns if 'index' in column], axis=1)
@@ -438,22 +438,22 @@ class Solver:
                 preds = preds[0]
             else:
                 preds_original = model.predict(X_valid_src)
-                preds_tta = model.predict(X_valid_tta) * -1
-                preds = (preds_original + preds_tta) / 2
+                # preds_tta = model.predict(X_valid_tta) * -1
+                preds = (preds_original + preds_original) / 2
             
             # Save the scores and the metrics.
             
             oof_preds[valid_index] = preds
             oof_labels[valid_index] = Y_valid
 
-            score_original = mean_squared_error(Y_valid, preds_original, squared=False)
-            score_tta = mean_squared_error(Y_valid, preds_tta, squared=False)
+            # score_original = mean_squared_error(Y_valid, preds_original, squared=False)
+            # score_tta = mean_squared_error(Y_valid, preds_tta, squared=False)
             score = mean_squared_error(Y_valid, oof_preds[valid_index], squared=False)
 
             scores.append(score)
 
-            print(round(score_original, 4))
-            print(round(score_tta, 4))
+            # print(round(score_original, 4))
+            # print(round(score_tta, 4))
             print(round(score, 4))    
             
             if not self.rerun:
@@ -560,8 +560,8 @@ class Solver:
         X_valid_src = X[src_columns].reset_index()
         X_valid_tta = X[tta_columns].rename(columns={column: column.replace('tta', 'src') for column in tta_columns}).reset_index()
 
-        _, X_valid_src = transform(X_valid_src[:1], X_valid_src, ofe_features, n_jobs=1)
-        _, X_valid_tta = transform(X_valid_tta[:1], X_valid_tta, ofe_features, n_jobs=1)
+        # _, X_valid_src = transform(X_valid_src[:1], X_valid_src, ofe_features, n_jobs=1)
+        # _, X_valid_tta = transform(X_valid_tta[:1], X_valid_tta, ofe_features, n_jobs=1)
         
         X_valid_src = X_valid_src.drop([column for column in X_valid_src.columns if 'index' in column], axis=1)
         X_valid_tta = X_valid_tta.drop([column for column in X_valid_tta.columns if 'index' in column], axis=1)
