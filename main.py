@@ -62,7 +62,7 @@ class Config:
     
     n_splits = 5
 
-    n_openfe_features = (9, 100)    
+    n_openfe_features = (0, 0)    
     
     catboost_params = {
         'iterations': 30000,
@@ -137,18 +137,20 @@ class Dataset:
         
         # Mirror the dataset.
         
-        # if self.config.is_train:
-        #     df_mirror = df.clone()
+        if self.config.is_train:
+            df = df.with_columns(pl.lit("original").alias("data_mode"))
 
-        #     df_mirror = df_mirror.with_columns([
-        #         pl.col("agent1").alias("agent2"),
-        #         pl.col("agent2").alias("agent1"),
-        #         (pl.col("utility_agent1") * -1).alias("utility_agent1"),
-        #         (1 - pl.col("AdvantageP1")).alias("AdvantageP1"),
-        #         (1 - pl.col("Balance")).alias("Balance")
-        #     ])
+            df_mirror = df.clone()
 
-        #     df = pl.concat([df, df_mirror])
+            df_mirror = df_mirror.with_columns(
+                pl.col("agent1").alias("agent2"),
+                pl.col("agent2").alias("agent1"),
+                (pl.col("utility_agent1") * -1).alias("utility_agent1"),
+                (1 - pl.col("AdvantageP1")).alias("AdvantageP1"),
+                pl.lit("mirror").alias("data_mode")
+            )
+
+            df = pl.concat([df, df_mirror])
         
         # Initial data shape.
         
@@ -170,7 +172,6 @@ class Dataset:
         # Basic information.
         
         print('There are', df.null_count().to_numpy().sum(), 'missing values.')
-        print('There are', len(df) - df.n_unique(), 'duplicates.')
         print('There are', df.select(pl.all().n_unique() == 2).to_numpy().sum(), 'binary columns.')
         
         return df
@@ -183,11 +184,9 @@ class Dataset:
         df = df.with_columns(
             pl.col('AdvantageP1').alias('src_AdvantageP1'),
             (1 - pl.col('AdvantageP1')).alias('tta_AdvantageP1'),
-            pl.col('Balance').alias('src_Balance'),
-            (1 - pl.col('Balance')).alias('tta_Balance'),
         )
 
-        df = df.drop(['AdvantageP1', 'Balance'], strict=False)
+        df = df.drop(['AdvantageP1'], strict=False)
         
         # Split agent string.
 
@@ -226,6 +225,10 @@ class Dataset:
         """Build the validation."""
         
         if self.config.is_train:
+
+            src_df = df.clone()
+            
+            df = df.filter(pl.col('data_mode') == 'original')
             
             df = df.with_columns(pl.lit(0).alias("fold"))
             df = df.with_row_index('index')
@@ -244,11 +247,22 @@ class Dataset:
                     .alias('fold')
                 )
 
-            df = df.drop(['index'], strict=False)
+            src_df = src_df.with_columns(pl.Series("fold", np.concatenate((df["fold"].to_numpy(), df["fold"].to_numpy()))))
 
-        # df = df.drop(['agent1', 'agent2'], strict=False)
+            src_df = src_df.drop(['index', 'agent1', 'agent2'], strict=False)
 
-        return df
+            # Drop duplicates.
+
+            columns_for_duplicates = [column for column in src_df.columns if column != "data_mode"]
+
+            src_df = src_df.unique(subset=columns_for_duplicates)
+
+            print("Data shape after dropping duplicates", src_df.shape)
+
+            return src_df
+        
+        else:
+            return df
     
     
     def drop_columns(self, df: pl.DataFrame) -> pl.DataFrame:
@@ -348,12 +362,12 @@ class Solver:
         # Define the instances for the metrics.
 
         scores = []
-        oof_preds, oof_labels = np.zeros(len(X)), np.zeros(len(X))
+        oof_preds, oof_labels = np.array([]), np.array([])
 
         # Define columns for TTA.
 
-        src_columns = [column for column in X.columns.tolist() if 'tta' not in column]
-        tta_columns = [column.replace('src', 'tta') for column in src_columns]
+        src_columns = [column for column in X.columns.tolist() if 'tta' not in column and column != 'data_mode'] 
+        tta_columns = [column.replace('src', 'tta') for column in src_columns if column != 'data_mode']
 
         if model_name == "catboost":
             feature_importances = None
@@ -369,6 +383,13 @@ class Solver:
 
             X_train, X_valid = X.iloc[train_index], X.iloc[valid_index]
             Y_train, Y_valid = Y.iloc[train_index], Y.iloc[valid_index]
+
+            mask = X_valid["data_mode"] == "original"
+            X_valid = X_valid[mask]
+            Y_valid = Y_valid[mask]
+
+            X_train = X_train.drop(["data_mode"], axis=1)
+            X_valid = X_valid.drop(["data_mode"], axis=1)
 
             # Apply the new features.
 
@@ -386,8 +407,8 @@ class Solver:
             X_valid_src = X_valid[src_columns]
             X_valid_tta = X_valid[tta_columns].rename(columns={column: column.replace('tta', 'src') for column in tta_columns})
 
-            # _, X_valid_src = transform(X_train[:10], X_valid_src, ofe_features, n_jobs=1)
-            # X_train, X_valid_tta = transform(X_train, X_valid_tta, ofe_features, n_jobs=1)
+            _, X_valid_src = transform(X_train[:10], X_valid_src, ofe_features, n_jobs=1)
+            X_train, X_valid_tta = transform(X_train, X_valid_tta, ofe_features, n_jobs=1)
 
             X_train = X_train.drop([column for column in X_train.columns if 'index' in column], axis=1)
             X_valid_src = X_valid_src.drop([column for column in X_valid_src.columns if 'index' in column], axis=1)
@@ -442,22 +463,22 @@ class Solver:
                 preds = preds[0]
             else:
                 preds_original = model.predict(X_valid_src)
-                # preds_tta = model.predict(X_valid_tta) * -1
-                preds = (preds_original + preds_original) / 2
+                preds_tta = model.predict(X_valid_tta) * -1
+                preds = (preds_original + preds_tta) / 2
             
             # Save the scores and the metrics.
             
-            oof_preds[valid_index] = preds
-            oof_labels[valid_index] = Y_valid
+            oof_preds =  np.concatenate((oof_preds, preds_original))
+            oof_labels =  np.concatenate((oof_labels, Y_valid))
 
-            # score_original = mean_squared_error(Y_valid, preds_original, squared=False)
-            # score_tta = mean_squared_error(Y_valid, preds_tta, squared=False)
-            score = mean_squared_error(Y_valid, oof_preds[valid_index], squared=False)
+            score_original = mean_squared_error(Y_valid, preds_original, squared=False)
+            score_tta = mean_squared_error(Y_valid, preds_tta, squared=False)
+            score = mean_squared_error(Y_valid, preds, squared=False)
 
-            scores.append(score)
+            scores.append(score_original)
 
-            # print(round(score_original, 4))
-            # print(round(score_tta, 4))
+            print(round(score_original, 4))
+            print(round(score_tta, 4))
             print(round(score, 4))    
             
             if not self.rerun:
@@ -564,8 +585,8 @@ class Solver:
         X_valid_src = X[src_columns].reset_index()
         X_valid_tta = X[tta_columns].rename(columns={column: column.replace('tta', 'src') for column in tta_columns}).reset_index()
 
-        # _, X_valid_src = transform(X_valid_src[:1], X_valid_src, ofe_features, n_jobs=1)
-        # _, X_valid_tta = transform(X_valid_tta[:1], X_valid_tta, ofe_features, n_jobs=1)
+        _, X_valid_src = transform(X_valid_src[:1], X_valid_src, ofe_features, n_jobs=1)
+        _, X_valid_tta = transform(X_valid_tta[:1], X_valid_tta, ofe_features, n_jobs=1)
         
         X_valid_src = X_valid_src.drop([column for column in X_valid_src.columns if 'index' in column], axis=1)
         X_valid_tta = X_valid_tta.drop([column for column in X_valid_tta.columns if 'index' in column], axis=1)
