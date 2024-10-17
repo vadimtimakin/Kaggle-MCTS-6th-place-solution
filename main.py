@@ -62,7 +62,7 @@ class Config:
     
     n_splits = 10
 
-    n_openfe_features = 100    
+    n_openfe_features = (9, 100)    
     
     catboost_params = {
         'iterations': 30000,
@@ -369,16 +369,21 @@ class Solver:
             # Apply the new features.
 
             with open(self.config.path_to_load_features, 'rb') as file:
-                operators = ["abs", "log", "sqrt", "square", "sigmoid", "round", "residual", "min", "max", "+", "-", "*", "/"]
                 ofe_features = pickle.load(file)
-                ofe_features = [feature for feature in ofe_features if feature.name in operators]
+
+                operators = ["abs", "log", "sqrt", "square", "sigmoid", "round", "residual", "min", "max", "+", "-", "*", "/"]
+                ofe_features_basic = ofe_features[:self.config.n_openfe_features[0]]
+                ofe_features_num = [feature for feature in ofe_features[self.config.n_openfe_features[0]:] if feature.name in operators]
+                ofe_features_num = ofe_features_num[:self.config.n_openfe_features[1] - len([f for f in ofe_features_basic if f.name in operators])]
+
+                ofe_features = ofe_features_basic + ofe_features_num
 
             X_train = X_train[src_columns]
             X_valid_src = X_valid[src_columns]
             X_valid_tta = X_valid[tta_columns].rename(columns={column: column.replace('tta', 'src') for column in tta_columns})
 
-            _, X_valid_src = transform(X_train[:10], X_valid_src, ofe_features[:self.config.n_openfe_features], n_jobs=1)
-            X_train, X_valid_tta = transform(X_train, X_valid_tta, ofe_features[:self.config.n_openfe_features], n_jobs=1)
+            _, X_valid_src = transform(X_train[:10], X_valid_src, ofe_features, n_jobs=1)
+            X_train, X_valid_tta = transform(X_train, X_valid_tta, ofe_features, n_jobs=1)
 
             X_train = X_train.drop([column for column in X_train.columns if 'index' in column], axis=1)
             X_valid_src = X_valid_src.drop([column for column in X_valid_src.columns if 'index' in column], axis=1)
@@ -542,16 +547,21 @@ class Solver:
         tta_columns = [column.replace('src', 'tta') for column in src_columns]
 
         with open(self.config.path_to_load_features, 'rb') as file:
-            operators = ["abs", "log", "sqrt", "square", "sigmoid", "round", "residual", "min", "max", "+", "-", "*", "/"]
             ofe_features = pickle.load(file)
-            ofe_features = [feature for feature in ofe_features if feature.name in operators]
+
+            operators = ["abs", "log", "sqrt", "square", "sigmoid", "round", "residual", "min", "max", "+", "-", "*", "/"]
+            ofe_features_basic = ofe_features[:self.config.n_openfe_features[0]]
+            ofe_features_num = [feature for feature in ofe_features[self.config.n_openfe_features[0]:] if feature.name in operators]
+            ofe_features_num = ofe_features_num[:self.config.n_openfe_features[1] - len([f for f in ofe_features_basic if f.name in operators])]
+
+            ofe_features = ofe_features_basic + ofe_features_num
 
         X = X.rename(columns = lambda x:re.sub('[^A-Za-z0-9_]+', '', x)).reset_index()
         X_valid_src = X[src_columns].reset_index()
         X_valid_tta = X[tta_columns].rename(columns={column: column.replace('tta', 'src') for column in tta_columns}).reset_index()
 
-        _, X_valid_src = transform(X_valid_src[:1], X_valid_src, ofe_features[:self.config.n_openfe_features], n_jobs=1)
-        _, X_valid_tta = transform(X_valid_tta[:1], X_valid_tta, ofe_features[:self.config.n_openfe_features], n_jobs=1)
+        _, X_valid_src = transform(X_valid_src[:1], X_valid_src, ofe_features, n_jobs=1)
+        _, X_valid_tta = transform(X_valid_tta[:1], X_valid_tta, ofe_features, n_jobs=1)
         
         X_valid_src = X_valid_src.drop([column for column in X_valid_src.columns if 'index' in column], axis=1)
         X_valid_tta = X_valid_tta.drop([column for column in X_valid_tta.columns if 'index' in column], axis=1)
