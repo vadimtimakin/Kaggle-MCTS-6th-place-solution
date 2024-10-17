@@ -217,8 +217,6 @@ class Dataset:
             pl.col('agent1').alias('tta_agent2'),
             pl.col('agent2').alias('tta_agent1'),
         )
-
-        df = df.drop(['agent1', 'agent2'], strict=False)
         
         print('Shape after feature generation:', df.shape)
     
@@ -234,7 +232,11 @@ class Dataset:
 
             cv = StratifiedGroupKFold(n_splits=self.config.n_splits, shuffle=True, random_state=self.config.seed)
 
-            for fold, (_, index) in enumerate(cv.split(df, df["utility_agent1"].cast(pl.Utf8).alias("utility_agent1"), df["GameRulesetName"])):
+            for fold, (_, index) in enumerate(cv.split(
+                    df,
+                    df["utility_agent1"].alias("utility_agent1").cast(pl.Utf8) + "_" + df["agent1"],
+                    df["GameRulesetName"]
+                )):
                 df = df.with_columns(
                     pl.when(pl.col('index').is_in(index))
                     .then(pl.lit(fold))
@@ -243,6 +245,8 @@ class Dataset:
                 )
 
             df = df.drop(['index'], strict=False)
+
+        # df = df.drop(['agent1', 'agent2'], strict=False)
 
         return df
     
