@@ -251,10 +251,10 @@ class Dataset:
         # TTA fundament.
 
         df = df.with_columns(
-            pl.col('agent1').alias('src_agent1'),
-            pl.col('agent2').alias('src_agent2'),
-            pl.col('agent1').alias('tta_agent2'),
-            pl.col('agent2').alias('tta_agent1'),
+            pl.col('agent1').alias('src_p1_agent'),
+            pl.col('agent2').alias('src_p2_agent'),
+            pl.col('agent1').alias('tta_p2_agent'),
+            pl.col('agent2').alias('tta_p1_agent'),
             pl.col('AdvantageP1').alias('src_AdvantageP1'),
             (1 - pl.col('AdvantageP1')).alias('tta_AdvantageP1'),
         )
@@ -265,62 +265,68 @@ class Dataset:
         
         df = df.to_pandas()
 
-        # Player position (positive / negative).
+        cols = ["agent", "selection", "exploration", "playout", "bounds"]
+        for c1 in cols:
+            for c2 in cols:
+                df[f"src_{c1}_{c2}"] = df[f"src_p1_{c1}"].astype(str) + df[f"src_p1_{c2}"].astype(str)
+                df[f"tta_{c1}_{c2}"] = df[f"tta_p1_{c1}"].astype(str) + df[f"tta_p1_{c2}"].astype(str)
 
-        total_agent = ['MCTS-ProgressiveHistory-0.1-MAST-false', 'MCTS-ProgressiveHistory-0.1-MAST-true', 'MCTS-ProgressiveHistory-0.1-NST-false', 'MCTS-ProgressiveHistory-0.1-NST-true', 'MCTS-ProgressiveHistory-0.1-Random200-false', 'MCTS-ProgressiveHistory-0.1-Random200-true', 'MCTS-ProgressiveHistory-0.6-MAST-false', 'MCTS-ProgressiveHistory-0.6-MAST-true', 'MCTS-ProgressiveHistory-0.6-NST-false', 'MCTS-ProgressiveHistory-0.6-NST-true', 'MCTS-ProgressiveHistory-0.6-Random200-false', 'MCTS-ProgressiveHistory-0.6-Random200-true', 'MCTS-ProgressiveHistory-1.41421356237-MAST-false', 'MCTS-ProgressiveHistory-1.41421356237-MAST-true', 'MCTS-ProgressiveHistory-1.41421356237-NST-false', 'MCTS-ProgressiveHistory-1.41421356237-NST-true', 'MCTS-ProgressiveHistory-1.41421356237-Random200-false', 'MCTS-ProgressiveHistory-1.41421356237-Random200-true', 'MCTS-UCB1-0.1-MAST-false', 'MCTS-UCB1-0.1-MAST-true', 'MCTS-UCB1-0.1-NST-false', 'MCTS-UCB1-0.1-NST-true', 'MCTS-UCB1-0.1-Random200-false', 'MCTS-UCB1-0.1-Random200-true', 'MCTS-UCB1-0.6-MAST-false', 'MCTS-UCB1-0.6-MAST-true', 'MCTS-UCB1-0.6-NST-false', 'MCTS-UCB1-0.6-NST-true', 'MCTS-UCB1-0.6-Random200-false', 'MCTS-UCB1-0.6-Random200-true', 'MCTS-UCB1-1.41421356237-MAST-false', 'MCTS-UCB1-1.41421356237-MAST-true', 'MCTS-UCB1-1.41421356237-NST-false', 'MCTS-UCB1-1.41421356237-NST-true', 'MCTS-UCB1-1.41421356237-Random200-false', 'MCTS-UCB1-1.41421356237-Random200-true', 'MCTS-UCB1GRAVE-0.1-MAST-false', 'MCTS-UCB1GRAVE-0.1-MAST-true', 'MCTS-UCB1GRAVE-0.1-NST-false', 'MCTS-UCB1GRAVE-0.1-NST-true', 'MCTS-UCB1GRAVE-0.1-Random200-false', 'MCTS-UCB1GRAVE-0.1-Random200-true', 'MCTS-UCB1GRAVE-0.6-MAST-false', 'MCTS-UCB1GRAVE-0.6-MAST-true', 'MCTS-UCB1GRAVE-0.6-NST-false', 'MCTS-UCB1GRAVE-0.6-NST-true', 'MCTS-UCB1GRAVE-0.6-Random200-false', 'MCTS-UCB1GRAVE-0.6-Random200-true', 'MCTS-UCB1GRAVE-1.41421356237-MAST-false', 'MCTS-UCB1GRAVE-1.41421356237-MAST-true', 'MCTS-UCB1GRAVE-1.41421356237-NST-false', 'MCTS-UCB1GRAVE-1.41421356237-NST-true', 'MCTS-UCB1GRAVE-1.41421356237-Random200-false', 'MCTS-UCB1GRAVE-1.41421356237-Random200-true', 'MCTS-UCB1Tuned-0.1-MAST-false', 'MCTS-UCB1Tuned-0.1-MAST-true', 'MCTS-UCB1Tuned-0.1-NST-false', 'MCTS-UCB1Tuned-0.1-NST-true', 'MCTS-UCB1Tuned-0.1-Random200-false', 'MCTS-UCB1Tuned-0.1-Random200-true', 'MCTS-UCB1Tuned-0.6-MAST-false', 'MCTS-UCB1Tuned-0.6-MAST-true', 'MCTS-UCB1Tuned-0.6-NST-false', 'MCTS-UCB1Tuned-0.6-NST-true', 'MCTS-UCB1Tuned-0.6-Random200-false', 'MCTS-UCB1Tuned-0.6-Random200-true', 'MCTS-UCB1Tuned-1.41421356237-MAST-false', 'MCTS-UCB1Tuned-1.41421356237-MAST-true', 'MCTS-UCB1Tuned-1.41421356237-NST-false', 'MCTS-UCB1Tuned-1.41421356237-NST-true', 'MCTS-UCB1Tuned-1.41421356237-Random200-false', 'MCTS-UCB1Tuned-1.41421356237-Random200-true']
+        # # Player position (positive / negative).
+
+        # total_agent = ['MCTS-ProgressiveHistory-0.1-MAST-false', 'MCTS-ProgressiveHistory-0.1-MAST-true', 'MCTS-ProgressiveHistory-0.1-NST-false', 'MCTS-ProgressiveHistory-0.1-NST-true', 'MCTS-ProgressiveHistory-0.1-Random200-false', 'MCTS-ProgressiveHistory-0.1-Random200-true', 'MCTS-ProgressiveHistory-0.6-MAST-false', 'MCTS-ProgressiveHistory-0.6-MAST-true', 'MCTS-ProgressiveHistory-0.6-NST-false', 'MCTS-ProgressiveHistory-0.6-NST-true', 'MCTS-ProgressiveHistory-0.6-Random200-false', 'MCTS-ProgressiveHistory-0.6-Random200-true', 'MCTS-ProgressiveHistory-1.41421356237-MAST-false', 'MCTS-ProgressiveHistory-1.41421356237-MAST-true', 'MCTS-ProgressiveHistory-1.41421356237-NST-false', 'MCTS-ProgressiveHistory-1.41421356237-NST-true', 'MCTS-ProgressiveHistory-1.41421356237-Random200-false', 'MCTS-ProgressiveHistory-1.41421356237-Random200-true', 'MCTS-UCB1-0.1-MAST-false', 'MCTS-UCB1-0.1-MAST-true', 'MCTS-UCB1-0.1-NST-false', 'MCTS-UCB1-0.1-NST-true', 'MCTS-UCB1-0.1-Random200-false', 'MCTS-UCB1-0.1-Random200-true', 'MCTS-UCB1-0.6-MAST-false', 'MCTS-UCB1-0.6-MAST-true', 'MCTS-UCB1-0.6-NST-false', 'MCTS-UCB1-0.6-NST-true', 'MCTS-UCB1-0.6-Random200-false', 'MCTS-UCB1-0.6-Random200-true', 'MCTS-UCB1-1.41421356237-MAST-false', 'MCTS-UCB1-1.41421356237-MAST-true', 'MCTS-UCB1-1.41421356237-NST-false', 'MCTS-UCB1-1.41421356237-NST-true', 'MCTS-UCB1-1.41421356237-Random200-false', 'MCTS-UCB1-1.41421356237-Random200-true', 'MCTS-UCB1GRAVE-0.1-MAST-false', 'MCTS-UCB1GRAVE-0.1-MAST-true', 'MCTS-UCB1GRAVE-0.1-NST-false', 'MCTS-UCB1GRAVE-0.1-NST-true', 'MCTS-UCB1GRAVE-0.1-Random200-false', 'MCTS-UCB1GRAVE-0.1-Random200-true', 'MCTS-UCB1GRAVE-0.6-MAST-false', 'MCTS-UCB1GRAVE-0.6-MAST-true', 'MCTS-UCB1GRAVE-0.6-NST-false', 'MCTS-UCB1GRAVE-0.6-NST-true', 'MCTS-UCB1GRAVE-0.6-Random200-false', 'MCTS-UCB1GRAVE-0.6-Random200-true', 'MCTS-UCB1GRAVE-1.41421356237-MAST-false', 'MCTS-UCB1GRAVE-1.41421356237-MAST-true', 'MCTS-UCB1GRAVE-1.41421356237-NST-false', 'MCTS-UCB1GRAVE-1.41421356237-NST-true', 'MCTS-UCB1GRAVE-1.41421356237-Random200-false', 'MCTS-UCB1GRAVE-1.41421356237-Random200-true', 'MCTS-UCB1Tuned-0.1-MAST-false', 'MCTS-UCB1Tuned-0.1-MAST-true', 'MCTS-UCB1Tuned-0.1-NST-false', 'MCTS-UCB1Tuned-0.1-NST-true', 'MCTS-UCB1Tuned-0.1-Random200-false', 'MCTS-UCB1Tuned-0.1-Random200-true', 'MCTS-UCB1Tuned-0.6-MAST-false', 'MCTS-UCB1Tuned-0.6-MAST-true', 'MCTS-UCB1Tuned-0.6-NST-false', 'MCTS-UCB1Tuned-0.6-NST-true', 'MCTS-UCB1Tuned-0.6-Random200-false', 'MCTS-UCB1Tuned-0.6-Random200-true', 'MCTS-UCB1Tuned-1.41421356237-MAST-false', 'MCTS-UCB1Tuned-1.41421356237-MAST-true', 'MCTS-UCB1Tuned-1.41421356237-NST-false', 'MCTS-UCB1Tuned-1.41421356237-NST-true', 'MCTS-UCB1Tuned-1.41421356237-Random200-false', 'MCTS-UCB1Tuned-1.41421356237-Random200-true']
         
-        agent1, agent2 = df['src_agent1'].values, df['src_agent2'].values
-        for i in range(len(total_agent)):
-            value = np.zeros(len(df))
-            for j in range(len(df)):
-                if agent1[j] == total_agent[i]:
-                    value[j] += 1
-                elif agent2[j] == total_agent[i]:
-                    value[j] -= 1
-            df[f'src_agent_{total_agent[i]}'] = value
+        # agent1, agent2 = df['src_agent1'].values, df['src_agent2'].values
+        # for i in range(len(total_agent)):
+        #     value = np.zeros(len(df))
+        #     for j in range(len(df)):
+        #         if agent1[j] == total_agent[i]:
+        #             value[j] += 1
+        #         elif agent2[j] == total_agent[i]:
+        #             value[j] -= 1
+        #     df[f'src_agent_{total_agent[i]}'] = value
         
-        agent1, agent2 = df['tta_agent1'].values, df['tta_agent2'].values
-        for i in range(len(total_agent)):
-            value = np.zeros(len(df))
-            for j in range(len(df)):
-                if agent1[j] == total_agent[i]:
-                    value[j] += 1
-                elif agent2[j] == total_agent[i]:
-                    value[j] -= 1
-            df[f'tta_agent_{total_agent[i]}'] = value
+        # agent1, agent2 = df['tta_agent1'].values, df['tta_agent2'].values
+        # for i in range(len(total_agent)):
+        #     value = np.zeros(len(df))
+        #     for j in range(len(df)):
+        #         if agent1[j] == total_agent[i]:
+        #             value[j] += 1
+        #         elif agent2[j] == total_agent[i]:
+        #             value[j] -= 1
+        #     df[f'tta_agent_{total_agent[i]}'] = value
 
-        # One-hot encoding.
+        # # One-hot encoding.
 
-        onehot_cols = [['NumOffDiagonalDirections', [0.0, 4.82, 2.0, 5.18, 3.08, 0.06]], ['NumLayers', [1, 0, 4, 5]], ['NumPhasesBoard', [3, 2, 1, 5, 4]], ['NumContainers', [1, 4, 3, 2]], ['NumDice', [0, 2, 1, 4, 6, 3, 5, 7]], ['ProposeDecisionFrequency', [0.0, 0.05, 0.01]], ['PromotionDecisionFrequency', [0.0, 0.01, 0.03, 0.02, 0.11, 0.05, 0.04]], ['SlideDecisionToFriendFrequency', [0.0, 0.19, 0.06]], ['LeapDecisionToEnemyFrequency', [0.0, 0.04, 0.01, 0.02, 0.07, 0.03, 0.14, 0.08]], ['HopDecisionFriendToFriendFrequency', [0.0, 0.13, 0.09]], ['HopDecisionEnemyToEnemyFrequency', [0.0, 0.01, 0.2, 0.03]], ['HopDecisionFriendToEnemyFrequency', [0.0, 0.01, 0.09, 0.25, 0.02]], ['FromToDecisionFrequency', [0.0, 0.38, 1.0, 0.31, 0.94, 0.67]], ['ProposeEffectFrequency', [0.0, 0.01, 0.03]], ['PushEffectFrequency', [0.0, 0.5, 0.96, 0.25]], ['FlipFrequency', [0.0, 0.87, 1.0, 0.96]], ['SetCountFrequency', [0.0, 0.62, 0.54, 0.02]], ['DirectionCaptureFrequency', [0.0, 0.55, 0.54]], ['EncloseCaptureFrequency', [0.0, 0.08, 0.1, 0.07, 0.12, 0.02, 0.09]], ['InterveneCaptureFrequency', [0.0, 0.01, 0.14, 0.04]], ['SurroundCaptureFrequency', [0.0, 0.01, 0.03, 0.02]], ['NumPlayPhase', [1, 2, 3, 4, 5, 6, 7, 8]], ['LineLossFrequency', [0.0, 0.96, 0.87, 0.46, 0.26, 0.88, 0.94]], ['ConnectionEndFrequency', [0.0, 0.19, 1.0, 0.23, 0.94, 0.35, 0.97]], ['ConnectionLossFrequency', [0.0, 0.54, 0.78]], ['GroupEndFrequency', [0.0, 1.0, 0.11, 0.79]], ['GroupWinFrequency', [0.0, 0.11, 1.0]], ['LoopEndFrequency', [0.0, 0.14, 0.66]], ['LoopWinFrequency', [0.0, 0.14, 0.66]], ['PatternEndFrequency', [0.0, 0.63, 0.35]], ['PatternWinFrequency', [0.0, 0.63, 0.35]], ['NoTargetPieceWinFrequency', [0.0, 0.72, 0.77, 0.95, 0.32, 1.0]], ['EliminatePiecesLossFrequency', [0.0, 0.85, 0.96, 0.68]], ['EliminatePiecesDrawFrequency', [0.0, 0.03, 0.91, 1.0, 0.36, 0.86]], ['NoOwnPiecesLossFrequency', [0.0, 1.0, 0.68]], ['FillEndFrequency', [0.0, 1.0, 0.04, 0.01, 0.99, 0.72]], ['FillWinFrequency', [0.0, 1.0, 0.04, 0.01, 0.99]], ['ReachDrawFrequency', [0.0, 0.9, 0.98]], ['ScoringLossFrequency', [0.0, 0.6, 0.62]], ['NoMovesLossFrequency', [0.0, 1.0, 0.13, 0.06]], ['NoMovesDrawFrequency', [0.0, 0.01, 0.04, 0.03, 0.22]], ['BoardSitesOccupiedChangeNumTimes', [0.0, 0.06, 0.42, 0.12, 0.14, 0.94]], ['BranchingFactorChangeNumTimesn', [0.0, 0.3, 0.02, 0.07, 0.04, 0.13, 0.01, 0.21, 0.03]], ['PieceNumberChangeNumTimes', [0.0, 0.06, 0.42, 0.12, 0.14, 1.0]], ['src_p1_selection', ['ProgressiveHistory', 'UCB1', 'UCB1GRAVE', 'UCB1Tuned']], ['src_p2_selection', ['ProgressiveHistory', 'UCB1GRAVE', 'UCB1', 'UCB1Tuned']], ['src_p1_exploration', ['0.1', '0.6', '1.41421356237']], ['src_p2_exploration', ['0.6', '0.1', '1.41421356237']], ['src_p1_playout', ['MAST', 'NST', 'Random200']], ['src_p2_playout', ['Random200', 'NST', 'MAST']]]
-        for col, unique in onehot_cols:
-            for u in unique:
-                df[f'{col}_{u}'] = (df[col] == u).astype(np.int8)
-                if 'src' in col:
-                    tta_col = col.replace('src', 'tta')
-                    df[f'{tta_col}_{u}'] = (df[col] == u).astype(np.int8)
+        # onehot_cols = [['NumOffDiagonalDirections', [0.0, 4.82, 2.0, 5.18, 3.08, 0.06]], ['NumLayers', [1, 0, 4, 5]], ['NumPhasesBoard', [3, 2, 1, 5, 4]], ['NumContainers', [1, 4, 3, 2]], ['NumDice', [0, 2, 1, 4, 6, 3, 5, 7]], ['ProposeDecisionFrequency', [0.0, 0.05, 0.01]], ['PromotionDecisionFrequency', [0.0, 0.01, 0.03, 0.02, 0.11, 0.05, 0.04]], ['SlideDecisionToFriendFrequency', [0.0, 0.19, 0.06]], ['LeapDecisionToEnemyFrequency', [0.0, 0.04, 0.01, 0.02, 0.07, 0.03, 0.14, 0.08]], ['HopDecisionFriendToFriendFrequency', [0.0, 0.13, 0.09]], ['HopDecisionEnemyToEnemyFrequency', [0.0, 0.01, 0.2, 0.03]], ['HopDecisionFriendToEnemyFrequency', [0.0, 0.01, 0.09, 0.25, 0.02]], ['FromToDecisionFrequency', [0.0, 0.38, 1.0, 0.31, 0.94, 0.67]], ['ProposeEffectFrequency', [0.0, 0.01, 0.03]], ['PushEffectFrequency', [0.0, 0.5, 0.96, 0.25]], ['FlipFrequency', [0.0, 0.87, 1.0, 0.96]], ['SetCountFrequency', [0.0, 0.62, 0.54, 0.02]], ['DirectionCaptureFrequency', [0.0, 0.55, 0.54]], ['EncloseCaptureFrequency', [0.0, 0.08, 0.1, 0.07, 0.12, 0.02, 0.09]], ['InterveneCaptureFrequency', [0.0, 0.01, 0.14, 0.04]], ['SurroundCaptureFrequency', [0.0, 0.01, 0.03, 0.02]], ['NumPlayPhase', [1, 2, 3, 4, 5, 6, 7, 8]], ['LineLossFrequency', [0.0, 0.96, 0.87, 0.46, 0.26, 0.88, 0.94]], ['ConnectionEndFrequency', [0.0, 0.19, 1.0, 0.23, 0.94, 0.35, 0.97]], ['ConnectionLossFrequency', [0.0, 0.54, 0.78]], ['GroupEndFrequency', [0.0, 1.0, 0.11, 0.79]], ['GroupWinFrequency', [0.0, 0.11, 1.0]], ['LoopEndFrequency', [0.0, 0.14, 0.66]], ['LoopWinFrequency', [0.0, 0.14, 0.66]], ['PatternEndFrequency', [0.0, 0.63, 0.35]], ['PatternWinFrequency', [0.0, 0.63, 0.35]], ['NoTargetPieceWinFrequency', [0.0, 0.72, 0.77, 0.95, 0.32, 1.0]], ['EliminatePiecesLossFrequency', [0.0, 0.85, 0.96, 0.68]], ['EliminatePiecesDrawFrequency', [0.0, 0.03, 0.91, 1.0, 0.36, 0.86]], ['NoOwnPiecesLossFrequency', [0.0, 1.0, 0.68]], ['FillEndFrequency', [0.0, 1.0, 0.04, 0.01, 0.99, 0.72]], ['FillWinFrequency', [0.0, 1.0, 0.04, 0.01, 0.99]], ['ReachDrawFrequency', [0.0, 0.9, 0.98]], ['ScoringLossFrequency', [0.0, 0.6, 0.62]], ['NoMovesLossFrequency', [0.0, 1.0, 0.13, 0.06]], ['NoMovesDrawFrequency', [0.0, 0.01, 0.04, 0.03, 0.22]], ['BoardSitesOccupiedChangeNumTimes', [0.0, 0.06, 0.42, 0.12, 0.14, 0.94]], ['BranchingFactorChangeNumTimesn', [0.0, 0.3, 0.02, 0.07, 0.04, 0.13, 0.01, 0.21, 0.03]], ['PieceNumberChangeNumTimes', [0.0, 0.06, 0.42, 0.12, 0.14, 1.0]], ['src_p1_selection', ['ProgressiveHistory', 'UCB1', 'UCB1GRAVE', 'UCB1Tuned']], ['src_p2_selection', ['ProgressiveHistory', 'UCB1GRAVE', 'UCB1', 'UCB1Tuned']], ['src_p1_exploration', ['0.1', '0.6', '1.41421356237']], ['src_p2_exploration', ['0.6', '0.1', '1.41421356237']], ['src_p1_playout', ['MAST', 'NST', 'Random200']], ['src_p2_playout', ['Random200', 'NST', 'MAST']]]
+        # for col, unique in onehot_cols:
+        #     for u in unique:
+        #         df[f'{col}_{u}'] = (df[col] == u).astype(np.int8)
+        #         if 'src' in col:
+        #             tta_col = col.replace('src', 'tta')
+        #             df[f'{tta_col}_{u}'] = (df[col] == u).astype(np.int8)
 
-        # Drop game's name from the rules.
+        # # Drop game's name from the rules.
 
-        df['LudRules'] = df['LudRules'].apply(lambda x: drop_gamename(x))
+        # df['LudRules'] = df['LudRules'].apply(lambda x: drop_gamename(x))
 
-        # Get player.
+        # # Get player.
 
-        df['player'] = df['LudRules'].apply(lambda rule: get_player(rule))
-        df['player_len'] = df['player'].apply(len)
-        df['LudRules'] = [rule[len(player):] for player, rule in zip(
-            df['player'], df['LudRules'])]
-        df = df.drop(['player'], axis=1)
+        # df['player'] = df['LudRules'].apply(lambda rule: get_player(rule))
+        # df['player_len'] = df['player'].apply(len)
+        # df['LudRules'] = [rule[len(player):] for player, rule in zip(
+        #     df['player'], df['LudRules'])]
+        # df = df.drop(['player'], axis=1)
 
-        # Rules parcing.
+        # # Rules parcing.
 
-        for rule in ['EnglishRules', 'LudRules']:
-            df[rule + "_ARI"] = df[rule].apply(lambda x: ARI(x))
-            df[rule + "CLRI"] = df[rule].apply(lambda x: CLRI(x))
-            df[rule + "McAlpine_EFLAW"] = df[rule].apply(lambda x: McAlpine_EFLAW(x))
+        # for rule in ['EnglishRules', 'LudRules']:
+        #     df[rule + "_ARI"] = df[rule].apply(lambda x: ARI(x))
+        #     df[rule + "CLRI"] = df[rule].apply(lambda x: CLRI(x))
+        #     df[rule + "McAlpine_EFLAW"] = df[rule].apply(lambda x: McAlpine_EFLAW(x))
 
-        # External features.
+        # # External features.
 
-        df['PlayoutsPerSecond/MovesPerSecond'] = df['PlayoutsPerSecond'] / df['MovesPerSecond']
+        # df['PlayoutsPerSecond/MovesPerSecond'] = df['PlayoutsPerSecond'] / df['MovesPerSecond']
 
         df = pl.from_pandas(df)
 
@@ -654,6 +660,7 @@ class Solver:
                     "importance": feature_importances
                 }).sort(by='importance', descending=True)
                 print(fi.head(10))
+                fi.write_csv('dataset/feature_importance.csv')
             
             gc.collect()
         
@@ -725,11 +732,23 @@ class Solver:
             
     def predict(self, X: pd.DataFrame, df_train: pd.DataFrame, data_checkpoint: dict) -> np.array:
         """Inference."""
-        
-        prediction = np.zeros(len(X))
+
+        # TF-IDF.
+
+        if self.config.n_tf_ids_features != 0:
+            X = self.generate_TF_IDF(X, mode='test', fold=0, n_tf_ids_features=self.config.n_tf_ids_features)
+            print('Shape with TF-IDF features', X.shape)
+        else:
+            X = X.drop(['EnglishRules', 'LudRules'], axis=1)
+
+        # TTA.
 
         src_columns = [column for column in X.columns.tolist() if 'tta' not in column]
         tta_columns = [column.replace('src', 'tta') for column in src_columns]
+
+        X = X.rename(columns = lambda x:re.sub('[^A-Za-z0-9_]+', '', x)).reset_index()
+        X_valid_src = X[src_columns].reset_index()
+        X_valid_tta = X[tta_columns].rename(columns={column: column.replace('tta', 'src') for column in tta_columns}).reset_index()
 
         # Apply OpenFE features.
 
@@ -737,15 +756,13 @@ class Solver:
             ofe_features = pickle.load(file)
 
             operators = ["abs", "log", "sqrt", "square", "sigmoid", "round", "residual", "min", "max", "+", "-", "*", "/"]
+
             ofe_features_basic = ofe_features[:self.config.n_openfe_features[0]]
             ofe_features_num = [feature for feature in ofe_features[self.config.n_openfe_features[0]:] if feature.name in operators]
-            ofe_features_num = ofe_features_num[:self.config.n_openfe_features[1] - len([f for f in ofe_features_basic if f.name in operators])]
+            basic_num_count = len([f for f in ofe_features_basic if f.name in operators]) 
+            ofe_features_num = ofe_features_num[:max(self.config.n_openfe_features[1], basic_num_count) - basic_num_count]
 
             ofe_features = ofe_features_basic + ofe_features_num
-
-        X = X.rename(columns = lambda x:re.sub('[^A-Za-z0-9_]+', '', x)).reset_index()
-        X_valid_src = X[src_columns].reset_index()
-        X_valid_tta = X[tta_columns].rename(columns={column: column.replace('tta', 'src') for column in tta_columns}).reset_index()
 
         if self.config.n_openfe_features != (0, 0):
             _, X_valid_src = transform(X_valid_src[:1], X_valid_src, ofe_features, n_jobs=1)
@@ -766,6 +783,8 @@ class Solver:
         X_valid_tta = X_valid_tta.astype(cat_mapping)
 
         # Inference.
+
+        prediction = np.zeros(len(X))
         
         for model_name, weight in self.config.weights.items():
             
