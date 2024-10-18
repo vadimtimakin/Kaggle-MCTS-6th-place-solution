@@ -28,6 +28,9 @@ sys.path.append('/kaggle/input/openfe-modified')
 from openfe import transform
 import kaggle_evaluation.mcts_inference_server
 
+import warnings
+warnings.filterwarnings('ignore')
+
 
 # --- Run mode ---
 
@@ -57,6 +60,7 @@ class Config:
     path_to_save_solver_checkpoint = 'solver_checkpoint.pickle' # Models, weights, etc.
     path_to_load_solver_checkpoint = 'solver_checkpoint.pickle' if LOCAL else '/kaggle/input/mcts-solution-checkpoint/solver_checkpoint.pickle'
     path_to_load_features = 'feature.pickle' if LOCAL else '/kaggle/input/mcts-solution-checkpoint/feature.pickle'
+    path_to_tfidf = '/home/toefl/K/MCTS/dataset/tf_idf' if LOCAL else '/kaggle/input/mcts-solution-checkpoint/tf_idf'
     
     # Training
 
@@ -64,7 +68,8 @@ class Config:
     
     n_splits = 5
 
-    n_openfe_features = (9, 100)    
+    n_openfe_features = (0, 0)    # (All, numerical)
+    n_tf_ids_features = 0
     
     catboost_params = {
         'iterations': 30000,
@@ -304,7 +309,7 @@ class Dataset:
         df['player_len'] = df['player'].apply(len)
         df['LudRules'] = [rule[len(player):] for player, rule in zip(
             df['player'], df['LudRules'])]
-        df.drop(['player'], axis=1, inplace=True)
+        df = df.drop(['player'], axis=1)
 
         # Rules parcing.
 
@@ -318,20 +323,11 @@ class Dataset:
         df['PlayoutsPerSecond/MovesPerSecond'] = df['PlayoutsPerSecond'] / df['MovesPerSecond']
 
         df = pl.from_pandas(df)
-        
+
         return df
     
     def build_validation_and_cv_features(self, df: pl.DataFrame) -> pl.DataFrame:
         """Build the validation and CV features."""
-
-        def pickle_dump(obj, path):
-            with open(path, mode="wb") as f:
-                dill.dump(obj, f, protocol=4)
-                
-        def pickle_load(path):
-            with open(path, mode="rb") as f:
-                data = dill.load(f)
-                return data
         
         if self.config.is_train:
 
@@ -382,8 +378,6 @@ class Dataset:
         """Drop the certain columns."""
         
         columns_to_drop = [
-            'EnglishRules',
-            'LudRules',
             'GameRulesetName',
         ]
         
@@ -456,6 +450,44 @@ class Solver:
                 self.models = pickle.load(f)
         except FileNotFoundError:
             self.models = {}
+
+    def generate_TF_IDF(self, df, mode, fold, n_tf_ids_features):
+        """Generate TF-IDF features."""
+
+        def pickle_dump(obj, path):
+            with open(path, mode="wb") as f:
+                dill.dump(obj, f, protocol=4)
+                
+        def pickle_load(path):
+            with open(path, mode="rb") as f:
+                data = dill.load(f)
+                return data
+
+        str_cols = ['EnglishRules', 'LudRules']
+
+        if mode == 'train': self.models["tfidf_paths"] = []
+
+        for col in str_cols:
+            df[f'{col}_len'] = df[col].apply(len)
+
+            if mode == 'train':
+                tfidf = TfidfVectorizer(max_features=n_tf_ids_features, ngram_range=(2, 3))
+                tfidf_feats = tfidf.fit_transform(df[col]).toarray()
+                for i in range(tfidf_feats.shape[1]):
+                    df[f"{col}_tfidf_{i}"] = tfidf_feats[:, i]
+                pickle_dump(tfidf, os.path.join(self.config.path_to_tfidf, f'tfidf_{fold}_{col}.model'))
+                self.models["tfidf_paths"].append(os.path.join(self.config.path_to_tfidf, f'tfidf_{fold}_{col}.model'))
+
+            else:
+                for i in range(len(self.models["tfidf_paths"])):
+                    if f'tfidf_{fold}_{col}.model' == self.models["tfidf_paths"][i].split('/')[-1]:
+                        tfidf = pickle_load(os.path.join(self.config.path_to_tfidf, f'tfidf_{fold}_{col}.model'))
+                        tfidf_feats = tfidf.transform(df[col]).toarray()
+                        for j in range(tfidf_feats.shape[1]):
+                            df[f"{col}_tfidf_{j}"] = tfidf_feats[:, j]
+
+        df = df.drop(str_cols, axis=1)
+        return df
     
     def train_one_model(self, df, X, Y, catcols, model_name) -> Tuple[np.array, np.array, Union[pl.DataFrame, None]]:
         """Train N folds of a certain model."""
@@ -476,11 +508,6 @@ class Solver:
 
         scores = []
         oof_preds, oof_labels = np.array([]), np.array([])
-
-        # Define columns for TTA.
-
-        src_columns = [column for column in X.columns.tolist() if 'tta' not in column and column != 'data_mode'] 
-        tta_columns = [column.replace('src', 'tta') for column in src_columns if column != 'data_mode']
 
         if model_name == "catboost":
             feature_importances = None
@@ -504,6 +531,27 @@ class Solver:
             X_train = X_train.drop(["data_mode"], axis=1)
             X_valid = X_valid.drop(["data_mode"], axis=1)
 
+            # TF-IDF.
+
+            if self.config.n_tf_ids_features != 0:
+                X_train = self.generate_TF_IDF(X_train, mode='train', fold=fold, n_tf_ids_features=self.config.n_tf_ids_features)
+                X_valid = self.generate_TF_IDF(X_valid, mode='test', fold=fold, n_tf_ids_features=self.config.n_tf_ids_features)
+                print('Shape with TF-IDF features', X_train.shape, X_valid.shape)
+            else:
+                X_train = X_train.drop(['EnglishRules', 'LudRules'], axis=1)
+                X_valid = X_valid.drop(['EnglishRules', 'LudRules'], axis=1)
+
+            # TTA processing.
+
+            src_columns = [column for column in X_train.columns.tolist() if 'tta' not in column and column != 'data_mode'] 
+            tta_columns = [column.replace('src', 'tta') for column in src_columns if column != 'data_mode']
+
+            X_train = X_train[src_columns]
+            X_valid_src = X_valid[src_columns]
+            X_valid_tta = X_valid[tta_columns].rename(columns={column: column.replace('tta', 'src') for column in tta_columns})
+
+            print('Original features shape', X_train.shape)
+            
             # Apply the new features.
 
             with open(self.config.path_to_load_features, 'rb') as file:
@@ -518,17 +566,15 @@ class Solver:
 
                 ofe_features = ofe_features_basic + ofe_features_num
 
-            X_train = X_train[src_columns]
-            X_valid_src = X_valid[src_columns]
-            X_valid_tta = X_valid[tta_columns].rename(columns={column: column.replace('tta', 'src') for column in tta_columns})
-
-            # _, X_valid_src = transform(X_train[:10], X_valid_src, ofe_features, n_jobs=1)
-            # X_train, X_valid_tta = transform(X_train, X_valid_tta, ofe_features, n_jobs=1)
+            if self.config.n_openfe_features != (0, 0):
+                _, X_valid_src = transform(X_train[:10], X_valid_src, ofe_features, n_jobs=1)
+                X_train, X_valid_tta = transform(X_train, X_valid_tta, ofe_features, n_jobs=1)
 
             X_train = X_train.drop([column for column in X_train.columns if 'index' in column], axis=1)
             X_valid_src = X_valid_src.drop([column for column in X_valid_src.columns if 'index' in column], axis=1)
             X_valid_tta = X_valid_tta.drop([column for column in X_valid_tta.columns if 'index' in column], axis=1)
-            X_valid = X_valid_src
+
+            print('Shape with OpenFE features', X_train.shape)
 
             # Categorical mapping.
 
@@ -543,9 +589,6 @@ class Solver:
             X_train = X_train.astype(cat_mapping)
             X_valid_src = X_valid_src.astype(cat_mapping)
             X_valid_tta = X_valid_tta.astype(cat_mapping)
-            X_valid = X_valid.astype(cat_mapping)
-
-            print('Shape with OpenFE features', X_train.shape)
             
             # Create and fit the model.
             
@@ -556,12 +599,12 @@ class Solver:
                         model = CatBoostClassifier(**self.config.catboost_params, cat_features=catcols)
                     else:
                         model = CatBoostRegressor(**self.config.catboost_params, cat_features=catcols)
-                    model.fit(X_train, Y_train, eval_set=(X_valid, Y_valid))
+                    model.fit(X_train, Y_train, eval_set=(X_valid_src, Y_valid))
                     
                 elif model_name == "lgbm":
                     model = lgb.LGBMRegressor(**self.config.lgbm_params)
                     model.fit(X_train, Y_train,
-                      eval_set=[(X_valid, Y_valid)],
+                      eval_set=[(X_valid_src, Y_valid)],
                       eval_metric='rmse',
                       callbacks=[
                           lgb.early_stopping(self.config.catboost_params["early_stopping_rounds"]),
@@ -704,8 +747,9 @@ class Solver:
         X_valid_src = X[src_columns].reset_index()
         X_valid_tta = X[tta_columns].rename(columns={column: column.replace('tta', 'src') for column in tta_columns}).reset_index()
 
-        # _, X_valid_src = transform(X_valid_src[:1], X_valid_src, ofe_features, n_jobs=1)
-        # _, X_valid_tta = transform(X_valid_tta[:1], X_valid_tta, ofe_features, n_jobs=1)
+        if self.config.n_openfe_features != (0, 0):
+            _, X_valid_src = transform(X_valid_src[:1], X_valid_src, ofe_features, n_jobs=1)
+            _, X_valid_tta = transform(X_valid_tta[:1], X_valid_tta, ofe_features, n_jobs=1)
         
         X_valid_src = X_valid_src.drop([column for column in X_valid_src.columns if 'index' in column], axis=1)
         X_valid_tta = X_valid_tta.drop([column for column in X_valid_tta.columns if 'index' in column], axis=1)
