@@ -62,7 +62,7 @@ class Config:
     
     n_splits = 5
 
-    n_openfe_features = (9, 0)    
+    n_openfe_features = (9, 100)    
     
     catboost_params = {
         'iterations': 30000,
@@ -178,17 +178,8 @@ class Dataset:
         
     def feature_generation(self, df: pl.DataFrame) -> pl.DataFrame:
         """Generate the new features."""
-
-        # TTA fundament.
-
-        df = df.with_columns(
-            pl.col('AdvantageP1').alias('src_AdvantageP1'),
-            (1 - pl.col('AdvantageP1')).alias('tta_AdvantageP1'),
-        )
-
-        df = df.drop(['AdvantageP1'], strict=False)
         
-        # Split agent string.
+        # Split the agent string.
 
         df = df.with_columns(
             pl.col('agent1').str.extract(r'MCTS-(.*)-(.*)-(.*)-(.*)', 1).alias('src_p1_selection'),
@@ -210,14 +201,18 @@ class Dataset:
             pl.col('agent1').str.extract(r'MCTS-(.*)-(.*)-(.*)-(.*)', 4).alias('tta_p2_bounds')
         )
 
+        # TTA fundament.
+
         df = df.with_columns(
             pl.col('agent1').alias('src_agent1'),
             pl.col('agent2').alias('src_agent2'),
             pl.col('agent1').alias('tta_agent2'),
             pl.col('agent2').alias('tta_agent1'),
+            pl.col('AdvantageP1').alias('src_AdvantageP1'),
+            (1 - pl.col('AdvantageP1')).alias('tta_AdvantageP1'),
         )
-        
-        print('Shape after feature generation:', df.shape)
+
+        df = df.drop(['AdvantageP1'], strict=False)
     
         return df
     
@@ -225,6 +220,8 @@ class Dataset:
         """Build the validation."""
         
         if self.config.is_train:
+
+            # Build the validation based on the original data and then assign the same folds to the mirror data to avoid the leak.
 
             src_df = df.clone()
             
@@ -419,6 +416,8 @@ class Solver:
             X_valid_tta = X_valid_tta.drop([column for column in X_valid_tta.columns if 'index' in column], axis=1)
             X_valid = X_valid_src
 
+            # Categorical mapping.
+
             cat_mapping, catcols = {}, []
             for feature in X_train.columns:
                 if X_train[feature].dtype == object:
@@ -457,7 +456,7 @@ class Solver:
             else:
                 model = self.models[model_name]["models"][fold]
             
-            # Prediction (with TTA)
+            # Prediction (with TTA).
             
             if self.config.task == "classification":
                 Y_valid = Y_valid.astype(np.float)
@@ -575,6 +574,8 @@ class Solver:
         src_columns = [column for column in X.columns.tolist() if 'tta' not in column]
         tta_columns = [column.replace('src', 'tta') for column in src_columns]
 
+        # Apply OpenFE features.
+
         with open(self.config.path_to_load_features, 'rb') as file:
             ofe_features = pickle.load(file)
 
@@ -595,6 +596,8 @@ class Solver:
         X_valid_src = X_valid_src.drop([column for column in X_valid_src.columns if 'index' in column], axis=1)
         X_valid_tta = X_valid_tta.drop([column for column in X_valid_tta.columns if 'index' in column], axis=1)
 
+        # Categorical mapping.
+
         catcols = ['src_p1_selection', 'src_p1_exploration', 'src_p1_playout', 'src_p1_bounds', 
                    'src_p2_selection', 'src_p2_exploration', 'src_p2_playout', 'src_p2_bounds', 'src_agent1', 'src_agent2']
 
@@ -603,6 +606,8 @@ class Solver:
 
         X_valid_src = X_valid_src.astype(cat_mapping)
         X_valid_tta = X_valid_tta.astype(cat_mapping)
+
+        # Inference.
         
         for model_name, weight in self.config.weights.items():
             
