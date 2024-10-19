@@ -262,6 +262,34 @@ class Dataset:
         df = df.drop(['AdvantageP1'], strict=False)
 
         # Feature engineering.
+
+        df = df.with_columns([
+            (pl.col('PlayoutsPerSecond') / (pl.col('MovesPerSecond') + 1e-15)).alias('Playouts/Moves'),
+            (pl.col('MovesPerSecond') / (pl.col('PlayoutsPerSecond') + 1e-15)).alias('EfficiencyPerPlayout'),
+            (pl.col('DurationActions') / (pl.col('DurationTurnsStdDev') + 1e-15)).alias('TurnsDurationEfficiency'),
+            (pl.col('DurationActions') / (pl.col('MovesPerSecond') + 1e-15)).alias('ActionTimeEfficiency'),
+            (pl.col('DurationTurnsStdDev') / (pl.col('DurationActions') + 1e-15)).alias('StandardizedTurnsEfficiency'),
+            (pl.col('DurationActions') / (pl.col('StateTreeComplexity') + 1e-15)).alias('DurationToComplexityRatio'),
+            (pl.col('GameTreeComplexity') / (pl.col('StateTreeComplexity') + 1e-15)).alias('NormalizedGameTreeComplexity'),
+            (pl.col('Balance') * pl.col('GameTreeComplexity')).alias('ComplexityBalanceInteraction'),
+            (pl.col('StateTreeComplexity') + pl.col('GameTreeComplexity')).alias('OverallComplexity'),
+            (pl.col('GameTreeComplexity') / (pl.col('PlayoutsPerSecond') + 1e-15)).alias('ComplexityPerPlayout'),
+            (pl.col('DurationTurnsNotTimeouts') / (pl.col('MovesPerSecond') + 1e-15)).alias('TurnsNotTimeouts/Moves'),
+            (pl.col('Timeouts') / (pl.col('DurationActions') + 1e-15)).alias('Timeouts/DurationActions'),
+            (pl.col('StepDecisionToEnemy') + pl.col('SlideDecisionToEnemy') + pl.col('HopDecisionMoreThanOne')).alias('ComplexDecisionRatio'),
+            (pl.col('StepDecisionToEnemy') + 
+             pl.col('HopDecisionEnemyToEnemy') + 
+             pl.col('HopDecisionFriendToEnemy') + 
+             pl.col('SlideDecisionToEnemy')).alias('AggressiveActionsRatio'),
+
+            (pl.col('src_AdvantageP1') / (pl.col('Balance') + 1e-15)).alias('src_AdvantageBalanceRatio'),
+            (pl.col('src_AdvantageP1') / (pl.col('DurationActions') + 1e-15)).alias('src_AdvantageTimeImpact'),
+            (pl.col('OutcomeUniformity') / (pl.col('src_AdvantageP1') + 1e-15)).alias('src_OutcomeUniformity/AdvantageP1'),
+
+            (pl.col('tta_AdvantageP1') / (pl.col('Balance') + 1e-15)).alias('tta_AdvantageBalanceRatio'),
+            (pl.col('tta_AdvantageP1') / (pl.col('DurationActions') + 1e-15)).alias('tta_AdvantageTimeImpact'),
+            (pl.col('OutcomeUniformity') / (pl.col('tta_AdvantageP1') + 1e-15)).alias('tta_OutcomeUniformity/AdvantageP1'),
+        ])
         
         df = df.to_pandas()
 
@@ -361,7 +389,6 @@ class Dataset:
                 )
 
             src_df = src_df.with_columns(pl.Series("fold", np.concatenate((df["fold"].to_numpy(), df["fold"].to_numpy()))))
-            src_df = src_df.with_columns(((pl.col("utility_agent1") + 1) / 2).alias("utility_agent1"))
 
             src_df = src_df.drop(['index', 'agent1', 'agent2'], strict=False)
 
@@ -641,7 +668,7 @@ class Solver:
 
             score_original = mean_squared_error(Y_valid, preds_original, squared=False)
             score_tta = mean_squared_error(Y_valid, preds_tta, squared=False)
-            score = mean_squared_error(Y_valid * 2 - 1, preds * 2 - 1, squared=False)
+            score = mean_squared_error(Y_valid, preds, squared=False)
 
             scores.append(score_original)
 
