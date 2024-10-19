@@ -271,11 +271,11 @@ class Dataset:
                 df[f"src_{c1}_{c2}"] = df[f"src_p1_{c1}"].astype(str) + df[f"src_p1_{c2}"].astype(str)
                 df[f"tta_{c1}_{c2}"] = df[f"tta_p1_{c1}"].astype(str) + df[f"tta_p1_{c2}"].astype(str)
 
-        # # Player position (positive / negative).
+        # Player position (positive / negative).
 
         # total_agent = ['MCTS-ProgressiveHistory-0.1-MAST-false', 'MCTS-ProgressiveHistory-0.1-MAST-true', 'MCTS-ProgressiveHistory-0.1-NST-false', 'MCTS-ProgressiveHistory-0.1-NST-true', 'MCTS-ProgressiveHistory-0.1-Random200-false', 'MCTS-ProgressiveHistory-0.1-Random200-true', 'MCTS-ProgressiveHistory-0.6-MAST-false', 'MCTS-ProgressiveHistory-0.6-MAST-true', 'MCTS-ProgressiveHistory-0.6-NST-false', 'MCTS-ProgressiveHistory-0.6-NST-true', 'MCTS-ProgressiveHistory-0.6-Random200-false', 'MCTS-ProgressiveHistory-0.6-Random200-true', 'MCTS-ProgressiveHistory-1.41421356237-MAST-false', 'MCTS-ProgressiveHistory-1.41421356237-MAST-true', 'MCTS-ProgressiveHistory-1.41421356237-NST-false', 'MCTS-ProgressiveHistory-1.41421356237-NST-true', 'MCTS-ProgressiveHistory-1.41421356237-Random200-false', 'MCTS-ProgressiveHistory-1.41421356237-Random200-true', 'MCTS-UCB1-0.1-MAST-false', 'MCTS-UCB1-0.1-MAST-true', 'MCTS-UCB1-0.1-NST-false', 'MCTS-UCB1-0.1-NST-true', 'MCTS-UCB1-0.1-Random200-false', 'MCTS-UCB1-0.1-Random200-true', 'MCTS-UCB1-0.6-MAST-false', 'MCTS-UCB1-0.6-MAST-true', 'MCTS-UCB1-0.6-NST-false', 'MCTS-UCB1-0.6-NST-true', 'MCTS-UCB1-0.6-Random200-false', 'MCTS-UCB1-0.6-Random200-true', 'MCTS-UCB1-1.41421356237-MAST-false', 'MCTS-UCB1-1.41421356237-MAST-true', 'MCTS-UCB1-1.41421356237-NST-false', 'MCTS-UCB1-1.41421356237-NST-true', 'MCTS-UCB1-1.41421356237-Random200-false', 'MCTS-UCB1-1.41421356237-Random200-true', 'MCTS-UCB1GRAVE-0.1-MAST-false', 'MCTS-UCB1GRAVE-0.1-MAST-true', 'MCTS-UCB1GRAVE-0.1-NST-false', 'MCTS-UCB1GRAVE-0.1-NST-true', 'MCTS-UCB1GRAVE-0.1-Random200-false', 'MCTS-UCB1GRAVE-0.1-Random200-true', 'MCTS-UCB1GRAVE-0.6-MAST-false', 'MCTS-UCB1GRAVE-0.6-MAST-true', 'MCTS-UCB1GRAVE-0.6-NST-false', 'MCTS-UCB1GRAVE-0.6-NST-true', 'MCTS-UCB1GRAVE-0.6-Random200-false', 'MCTS-UCB1GRAVE-0.6-Random200-true', 'MCTS-UCB1GRAVE-1.41421356237-MAST-false', 'MCTS-UCB1GRAVE-1.41421356237-MAST-true', 'MCTS-UCB1GRAVE-1.41421356237-NST-false', 'MCTS-UCB1GRAVE-1.41421356237-NST-true', 'MCTS-UCB1GRAVE-1.41421356237-Random200-false', 'MCTS-UCB1GRAVE-1.41421356237-Random200-true', 'MCTS-UCB1Tuned-0.1-MAST-false', 'MCTS-UCB1Tuned-0.1-MAST-true', 'MCTS-UCB1Tuned-0.1-NST-false', 'MCTS-UCB1Tuned-0.1-NST-true', 'MCTS-UCB1Tuned-0.1-Random200-false', 'MCTS-UCB1Tuned-0.1-Random200-true', 'MCTS-UCB1Tuned-0.6-MAST-false', 'MCTS-UCB1Tuned-0.6-MAST-true', 'MCTS-UCB1Tuned-0.6-NST-false', 'MCTS-UCB1Tuned-0.6-NST-true', 'MCTS-UCB1Tuned-0.6-Random200-false', 'MCTS-UCB1Tuned-0.6-Random200-true', 'MCTS-UCB1Tuned-1.41421356237-MAST-false', 'MCTS-UCB1Tuned-1.41421356237-MAST-true', 'MCTS-UCB1Tuned-1.41421356237-NST-false', 'MCTS-UCB1Tuned-1.41421356237-NST-true', 'MCTS-UCB1Tuned-1.41421356237-Random200-false', 'MCTS-UCB1Tuned-1.41421356237-Random200-true']
         
-        # agent1, agent2 = df['src_agent1'].values, df['src_agent2'].values
+        # agent1, agent2 = df['src_p1_agent'].values, df['src_p2_agent'].values
         # for i in range(len(total_agent)):
         #     value = np.zeros(len(df))
         #     for j in range(len(df)):
@@ -285,7 +285,7 @@ class Dataset:
         #             value[j] -= 1
         #     df[f'src_agent_{total_agent[i]}'] = value
         
-        # agent1, agent2 = df['tta_agent1'].values, df['tta_agent2'].values
+        # agent1, agent2 = df['tta_p1_agent'].values, df['tta_p2_agent'].values
         # for i in range(len(total_agent)):
         #     value = np.zeros(len(df))
         #     for j in range(len(df)):
@@ -305,7 +305,7 @@ class Dataset:
         #             tta_col = col.replace('src', 'tta')
         #             df[f'{tta_col}_{u}'] = (df[col] == u).astype(np.int8)
 
-        # # Drop game's name from the rules.
+        # Drop game's name from the rules.
 
         # df['LudRules'] = df['LudRules'].apply(lambda x: drop_gamename(x))
 
@@ -361,6 +361,7 @@ class Dataset:
                 )
 
             src_df = src_df.with_columns(pl.Series("fold", np.concatenate((df["fold"].to_numpy(), df["fold"].to_numpy()))))
+            src_df = src_df.with_columns(((pl.col("utility_agent1") + 1) / 2).alias("utility_agent1"))
 
             src_df = src_df.drop(['index', 'agent1', 'agent2'], strict=False)
 
@@ -376,6 +377,7 @@ class Dataset:
         
         else:
             df = df.drop(['index', 'agent1', 'agent2'], strict=False)
+            df = df.with_columns(((pl.col("utility_agent1") + 1) / 2).alias("utility_agent1"))
 
             return df
     
@@ -639,7 +641,7 @@ class Solver:
 
             score_original = mean_squared_error(Y_valid, preds_original, squared=False)
             score_tta = mean_squared_error(Y_valid, preds_tta, squared=False)
-            score = mean_squared_error(Y_valid, preds, squared=False)
+            score = mean_squared_error(Y_valid * 2 - 1, preds * 2 - 1, squared=False)
 
             scores.append(score_original)
 
