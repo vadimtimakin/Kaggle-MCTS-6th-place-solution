@@ -404,7 +404,6 @@ class Dataset:
         
         else:
             df = df.drop(['index', 'agent1', 'agent2'], strict=False)
-            df = df.with_columns(((pl.col("utility_agent1") + 1) / 2).alias("utility_agent1"))
 
             return df
     
@@ -775,9 +774,9 @@ class Solver:
         src_columns = [column for column in X.columns.tolist() if 'tta' not in column]
         tta_columns = [column.replace('src', 'tta') for column in src_columns]
 
-        X = X.rename(columns = lambda x:re.sub('[^A-Za-z0-9_]+', '', x)).reset_index()
-        X_valid_src = X[src_columns].reset_index()
-        X_valid_tta = X[tta_columns].rename(columns={column: column.replace('tta', 'src') for column in tta_columns}).reset_index()
+        X_valid_src = X[src_columns].reset_index().rename(columns = lambda x:re.sub('[^A-Za-z0-9_]+', '', x)).reset_index()
+        X_valid_tta = X[tta_columns].rename(columns={column: column.replace('tta', 'src') for column in tta_columns}).reset_index()\
+        .rename(columns = lambda x:re.sub('[^A-Za-z0-9_]+', '', x)).reset_index()
 
         # Apply OpenFE features.
 
@@ -802,11 +801,12 @@ class Solver:
 
         # Categorical mapping.
 
-        catcols = ['src_p1_selection', 'src_p1_exploration', 'src_p1_playout', 'src_p1_bounds', 
-                   'src_p2_selection', 'src_p2_exploration', 'src_p2_playout', 'src_p2_bounds', 'src_agent1', 'src_agent2']
-
-        cat_mapping = {column: float for column in X_valid_src.columns}
-        for column in catcols: cat_mapping[column] = pd.CategoricalDtype(categories=list(set(X_valid_src[column])))
+        cat_mapping = {}
+        for feature in X_valid_src.columns:
+            if X_valid_src[feature].dtype == object:
+                cat_mapping[feature] = pd.CategoricalDtype(categories=list(set(X_valid_src[feature])))
+            else:
+                cat_mapping[feature] = float
 
         X_valid_src = X_valid_src.astype(cat_mapping)
         X_valid_tta = X_valid_tta.astype(cat_mapping)
