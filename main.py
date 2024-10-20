@@ -87,23 +87,25 @@ class Config:
     }
     
     lgbm_params = {
-        "boosting_type": "gbdt",
         'objective': 'regression',
-        
+        'min_child_samples': 24,
         'num_iterations': 30000,
         'learning_rate': 0.01,
-        'max_depth': 10,
         'extra_trees': True,
-        
+        'reg_lambda': 0.8,
+        'reg_alpha': 0.1,
+        'num_leaves': 64,
         'metric': 'rmse',
-        'device': 'gpu',
+        'device': 'cpu',
+        'max_depth': 9,
+        'max_bin': 128,
         'verbose': -1,
-        'seed': 0xFACED,
+        'seed': 42
     }
     
     to_train = {
-        "catboost": True,
-        "lgbm": False,
+        "catboost": False,
+        "lgbm": True,
     }
     
     weights = {
@@ -316,10 +318,6 @@ class Dataset:
     def drop_columns(self, df: pl.DataFrame) -> pl.DataFrame:
         """Drop the certain columns."""
         
-        columns_to_drop = [
-            'GameRulesetName',
-        ]
-        
         if self.config.is_train:
             columns_to_drop += [
                 'num_wins_agent1',
@@ -479,65 +477,6 @@ class Solver:
             else:
                 X_train = X_train.drop(['EnglishRules', 'LudRules'], axis=1)
                 X_valid = X_valid.drop(['EnglishRules', 'LudRules'], axis=1)
-
-            # Feature encoding.
-        
-            features_to_encode = [
-                'src_p2_selection',
-                'src_p2_playout',
-                'src_p2_agent',
-                'src_selection_exploration',
-                'src_p2_exploration',
-                'src_exploration_selection',
-                'src_p1_playout',
-                'src_p1_selection',
-                'src_selection_playout',
-                'src_playout_playout',
-                'src_exploration_playout',
-                'src_selection_selection',
-                'src_selection_bounds',
-                'src_playout_bounds',
-                'src_p1_exploration',
-                'src_playout_selection',
-                'src_exploration_bounds',
-                'src_playout_exploration',
-                'src_bounds_selection',
-                'src_p1_agent',
-                'src_exploration_exploration',
-                'src_p2_bounds',
-                'src_bounds_playout',
-                'src_bounds_exploration',
-                'src_agent_agent',
-                'src_playout_agent',
-                'src_agent_playout',
-                'src_exploration_agent',
-                'src_bounds_agent',
-                'src_agent_exploration',
-                'src_agent_selection',
-                'src_agent_bounds',
-                'src_p1_bounds',
-                'src_selection_agent',
-                'src_bounds_bounds',
-            ]
-
-            print("Feature encoding")
-            for feature in tqdm(features_to_encode):
-
-                # Original
-                m = {}
-                for u in X_train[feature].unique():
-                    m[u] = Y_train[X_train[feature] == u].median()
-                X_train['encoded' + feature] = X_train[feature].map(m)
-                X_valid['encoded' + feature] = X_valid[feature].map(m)
-
-                # TTA
-                m = {}
-                feature = feature.replace('src', 'tta')
-                for u in X_train[feature].unique():
-                    m[u] = Y_train[X_train[feature] == u].median()
-                X_valid['encoded' + feature] = X_valid[feature].map(m)
-
-            print("Shape after feature encoding", X_train.shape)
 
             # TTA processing.
 
