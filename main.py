@@ -36,7 +36,7 @@ warnings.filterwarnings('ignore')
 
 IS_TRAIN = True
 LOCAL = True
-IS_RERUN = False
+IS_RERUN = True
 
 
 # --- Config ---
@@ -128,9 +128,10 @@ def set_seed(SEED):
 class Dataset:
     """The data pipeline."""
     
-    def __init__(self, config: Config) -> None:
+    def __init__(self, config: Config, rerun: bool) -> None:
         """Initialization."""
         self.config = config
+        self.rerun = rerun
         
         if self.config.is_train:
             self.data_checkpoint = {
@@ -303,7 +304,7 @@ class Dataset:
 
             columns_for_duplicates = [column for column in src_df.columns if column != "data_mode"]
 
-            src_df = src_df.unique(subset=columns_for_duplicates)
+            # src_df = src_df.unique(subset=columns_for_duplicates)
 
             print("Data shape after dropping duplicates", src_df.shape)
 
@@ -448,7 +449,7 @@ class Solver:
         # Define the instances for the metrics.
 
         scores = []
-        oof_preds, oof_labels = np.array([]), np.array([])
+        oof_preds, oof_labels, oof_mask = np.zeros([len(df)]), np.zeros([len(df)]), np.zeros([len(df)])
 
         if model_name == "catboost":
             feature_importances = None
@@ -465,13 +466,6 @@ class Solver:
             X_train, X_valid = X.iloc[train_index], X.iloc[valid_index]
             Y_train, Y_valid = Y.iloc[train_index], Y.iloc[valid_index]
 
-            mask = X_valid["data_mode"] == "original"
-            X_valid = X_valid[mask]
-            Y_valid = Y_valid[mask]
-
-            X_train = X_train.drop(["data_mode"], axis=1)
-            X_valid = X_valid.drop(["data_mode"], axis=1)
-
             # TF-IDF.
 
             if self.config.n_tf_ids_features != 0:
@@ -484,16 +478,14 @@ class Solver:
 
             # TTA processing.
 
-            src_columns = [column for column in X_train.columns.tolist() if 'tta' not in column and column != 'data_mode'] 
-            tta_columns = [column.replace('src', 'tta') for column in src_columns if column != 'data_mode']
+            src_columns = [column for column in X_train.columns.tolist() if 'tta' not in column and column] 
+            tta_columns = [column.replace('src', 'tta') for column in src_columns]
 
             X_train = X_train[src_columns]
-            X_valid_src = X_valid[src_columns]
             X_valid_tta = X_valid[tta_columns].rename(columns={column: column.replace('tta', 'src') for column in tta_columns})
-
-            print('Original features shape', X_train.shape)
+            X_valid = X_valid[src_columns]
             
-            # Apply the new features.
+            # Apply the OpenFE features.
 
             with open(self.config.path_to_load_features, 'rb') as file:
                 ofe_features = pickle.load(file)
@@ -511,20 +503,36 @@ class Solver:
                # ofe_features = [ofe_features[i] for i in valid_features]
 
             if self.config.n_openfe_features != (0, 0):
-                _, X_valid_src = transform(X_train[:10], X_valid_src, ofe_features, n_jobs=1)
+                _, X_valid = transform(X_train[:10], X_valid, ofe_features, n_jobs=1)
                 X_train, X_valid_tta = transform(X_train, X_valid_tta, ofe_features, n_jobs=1)
 
                 valid_columns = ['autoFE_f_112', 'autoFE_f_468', 'autoFE_f_386', 'autoFE_f_6', 'autoFE_f_333', 'autoFE_f_357', 'autoFE_f_353', 'autoFE_f_194', 'autoFE_f_59', 'autoFE_f_174', 'autoFE_f_191', 'autoFE_f_182', 'autoFE_f_436', 'autoFE_f_261', 'autoFE_f_328', 'autoFE_f_189', 'autoFE_f_8', 'autoFE_f_275', 'autoFE_f_279', 'autoFE_f_223', 'autoFE_f_154', 'autoFE_f_319', 'autoFE_f_221', 'autoFE_f_218', 'autoFE_f_380', 'autoFE_f_402', 'autoFE_f_276', 'autoFE_f_1', 'autoFE_f_253', 'autoFE_f_362', 'autoFE_f_294', 'autoFE_f_108', 'autoFE_f_484', 'autoFE_f_11', 'autoFE_f_200', 'autoFE_f_356', 'autoFE_f_491', 'autoFE_f_2', 'autoFE_f_248', 'autoFE_f_176', 'autoFE_f_449', 'autoFE_f_335', 'autoFE_f_310', 'autoFE_f_479', 'autoFE_f_322', 'autoFE_f_446', 'autoFE_f_198', 'autoFE_f_116', 'autoFE_f_206', 'autoFE_f_214']
 
                 X_train = X_train.drop([column for column in X_train.columns if ('autoFE' in column) & (column not in valid_columns)], axis=1)
-                X_valid_src = X_valid_src.drop([column for column in X_valid_src.columns if ('autoFE' in column) & (column not in valid_columns)], axis=1)
+                X_valid = X_valid.drop([column for column in X_valid.columns if ('autoFE' in column) & (column not in valid_columns)], axis=1)
                 X_valid_tta = X_valid_tta.drop([column for column in X_valid_tta.columns if ('autoFE' in column) & (column not in valid_columns)], axis=1)
 
+                del ofe_features
+
             X_train = X_train.drop([column for column in X_train.columns if 'index' in column], axis=1)
-            X_valid_src = X_valid_src.drop([column for column in X_valid_src.columns if 'index' in column], axis=1)
+            X_valid = X_valid.drop([column for column in X_valid.columns if 'index' in column], axis=1)
             X_valid_tta = X_valid_tta.drop([column for column in X_valid_tta.columns if 'index' in column], axis=1)
 
             print('Shape with OpenFE features', X_train.shape)
+
+            # Separate original and mirrored data.
+
+            mask = X_valid["data_mode"] == "original"
+            X_valid_src = X_valid[mask]
+            X_valid_tta = X_valid_tta[mask]
+            Y_valid_src = Y_valid[mask]
+
+            X_train = X_train.drop(["data_mode"], axis=1)
+            X_valid = X_valid.drop(["data_mode"], axis=1)
+            X_valid_src = X_valid_src.drop(["data_mode"], axis=1)
+            X_valid_tta = X_valid_tta.drop(["data_mode"], axis=1)
+
+            print('Original features shape', X_train.shape)
 
             # Categorical mapping.
 
@@ -537,6 +545,7 @@ class Solver:
                     cat_mapping[feature] = float
     
             X_train = X_train.astype(cat_mapping)
+            X_valid = X_valid.astype(cat_mapping)
             X_valid_src = X_valid_src.astype(cat_mapping)
             X_valid_tta = X_valid_tta.astype(cat_mapping)
             
@@ -549,12 +558,12 @@ class Solver:
                         model = CatBoostClassifier(**self.config.catboost_params, cat_features=catcols)
                     else:
                         model = CatBoostRegressor(**self.config.catboost_params, cat_features=catcols)
-                    model.fit(X_train, Y_train, eval_set=(X_valid_src, Y_valid))
+                    model.fit(X_train, Y_train, eval_set=(X_valid_src, Y_valid_src))
                     
                 elif model_name == "lgbm":
                     model = lgb.LGBMRegressor(**self.config.lgbm_params)
                     model.fit(X_train, Y_train,
-                      eval_set=[(X_valid_src, Y_valid)],
+                      eval_set=[(X_valid_src, Y_valid_src)],
                       eval_metric='rmse',
                       callbacks=[
                           lgb.early_stopping(self.config.catboost_params["early_stopping_rounds"]),
@@ -566,7 +575,7 @@ class Solver:
             # Prediction (with TTA).
             
             if self.config.task == "classification":
-                Y_valid = Y_valid.astype(np.float)
+                Y_valid_src = Y_valid_src.astype(np.float)
                 preds_original = model.predict(X_valid_src).astype(float)
                 preds_tta = model.predict(X_valid_tta).astype(float) * -1
                 preds = (preds_original + preds_tta) / 2
@@ -575,15 +584,17 @@ class Solver:
                 preds_original = model.predict(X_valid_src)
                 preds_tta = model.predict(X_valid_tta) * -1
                 preds = (preds_original + preds_tta) / 2
+                full_preds = model.predict(X_valid)
             
             # Save the scores and the metrics.
             
-            oof_preds =  np.concatenate((oof_preds, preds_original))
-            oof_labels =  np.concatenate((oof_labels, Y_valid))
+            oof_preds[valid_index] = full_preds
+            oof_labels[valid_index] = Y_valid
+            oof_mask[valid_index] = mask
 
-            score_original = mean_squared_error(Y_valid, preds_original, squared=False)
-            score_tta = mean_squared_error(Y_valid, preds_tta, squared=False)
-            score = mean_squared_error(Y_valid, preds, squared=False)
+            score_original = mean_squared_error(Y_valid_src, preds_original, squared=False)
+            score_tta = mean_squared_error(Y_valid_src, preds_tta, squared=False)
+            score = mean_squared_error(Y_valid_src, preds, squared=False)
 
             scores.append(score_original)
 
@@ -619,6 +630,10 @@ class Solver:
         if not self.rerun:
             self.models[model_name]["features"] = src_columns
             self.models[model_name]["oof_score"] = oof_score
+
+        self.models[model_name]["oof_preds"] = oof_preds
+        self.models[model_name]["oof_labels"] = oof_labels
+        self.models[model_name]["mode"] = oof_mask
         
         print(f'\nCV scores {model_name}')
         for fold in range(len(scores)):
@@ -668,7 +683,7 @@ class Solver:
         
         # Save solution checkpoint for the inference.
         
-        if self.config.is_train and not self.rerun:
+        if self.config.is_train:
             with open(self.config.path_to_save_solver_checkpoint, "wb") as f:
                 pickle.dump(self.models, f)
                 
@@ -774,7 +789,7 @@ def train(rerun: bool, oof_features=None) -> dict:
     config = Config()
     
     set_seed(config.seed)
-    dataset = Dataset(config)
+    dataset = Dataset(config, rerun)
     solver = Solver(config, rerun)
     
     df = pl.read_csv(config.path_to_train_dataset)
