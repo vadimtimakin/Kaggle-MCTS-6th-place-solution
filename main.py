@@ -74,7 +74,7 @@ class Config:
     catboost_params = {
         'iterations': 30000,
         'learning_rate': 0.01,
-        'depth': 10,
+        'depth': 12,
         'early_stopping_rounds': 200,
         
         'loss_function': 'RMSE',
@@ -499,6 +499,7 @@ class Solver:
                 ofe_features = pickle.load(file)
 
                 operators = ["abs", "log", "sqrt", "square", "sigmoid", "round", "residual", "min", "max", "+", "-", "*", "/"]
+               #  valid_features = [112, 468, 386, 6, 333, 357, 353, 194, 59, 174, 191, 182, 436, 261, 328, 189, 8, 275, 279, 223, 154, 319, 221, 218, 380, 402, 276, 1, 253, 362, 294, 108, 484, 11, 200, 356, 491, 2, 248, 176, 449, 335, 310, 479, 322, 446, 198, 116, 206, 214]
 
                 ofe_features_basic = ofe_features[:self.config.n_openfe_features[0]]
                 ofe_features_num = [feature for feature in ofe_features[self.config.n_openfe_features[0]:] if feature.name in operators]
@@ -506,6 +507,8 @@ class Solver:
                 ofe_features_num = ofe_features_num[:max(self.config.n_openfe_features[1], basic_num_count) - basic_num_count]
 
                 ofe_features = ofe_features_basic + ofe_features_num
+
+               # ofe_features = [ofe_features[i] for i in valid_features]
 
             if self.config.n_openfe_features != (0, 0):
                 _, X_valid_src = transform(X_train[:10], X_valid_src, ofe_features, n_jobs=1)
@@ -698,6 +701,7 @@ class Solver:
             ofe_features = pickle.load(file)
 
             operators = ["abs", "log", "sqrt", "square", "sigmoid", "round", "residual", "min", "max", "+", "-", "*", "/"]
+           # valid_features = [112, 468, 386, 6, 333, 357, 353, 194, 59, 174, 191, 182, 436, 261, 328, 189, 8, 275, 279, 223, 154, 319, 221, 218, 380, 402, 276, 1, 253, 362, 294, 108, 484, 11, 200, 356, 491, 2, 248, 176, 449, 335, 310, 479, 322, 446, 198, 116, 206, 214]
 
             ofe_features_basic = ofe_features[:self.config.n_openfe_features[0]]
             ofe_features_num = [feature for feature in ofe_features[self.config.n_openfe_features[0]:] if feature.name in operators]
@@ -705,15 +709,19 @@ class Solver:
             ofe_features_num = ofe_features_num[:max(self.config.n_openfe_features[1], basic_num_count) - basic_num_count]
 
             ofe_features = ofe_features_basic + ofe_features_num
+           # ofe_features = [ofe_features[i] for i in valid_features]
 
         if self.config.n_openfe_features != (0, 0):
             _, X_valid_src = transform(X_valid_src[:1], X_valid_src, ofe_features, n_jobs=1)
             _, X_valid_tta = transform(X_valid_tta[:1], X_valid_tta, ofe_features, n_jobs=1)
 
-            valid_columns = ['autoFE_f_112', 'autoFE_f_468', 'autoFE_f_386', 'autoFE_f_6', 'autoFE_f_333', 'autoFE_f_357', 'autoFE_f_353', 'autoFE_f_194', 'autoFE_f_59', 'autoFE_f_174', 'autoFE_f_191', 'autoFE_f_182', 'autoFE_f_436', 'autoFE_f_261', 'autoFE_f_328', 'autoFE_f_189', 'autoFE_f_8', 'autoFE_f_275', 'autoFE_f_279', 'autoFE_f_223', 'autoFE_f_154', 'autoFE_f_319', 'autoFE_f_221', 'autoFE_f_218', 'autoFE_f_380', 'autoFE_f_402', 'autoFE_f_276', 'autoFE_f_1', 'autoFE_f_253', 'autoFE_f_362', 'autoFE_f_294', 'autoFE_f_108', 'autoFE_f_484', 'autoFE_f_11', 'autoFE_f_200', 'autoFE_f_356', 'autoFE_f_491', 'autoFE_f_2', 'autoFE_f_248', 'autoFE_f_176', 'autoFE_f_449', 'autoFE_f_335', 'autoFE_f_310', 'autoFE_f_479', 'autoFE_f_322', 'autoFE_f_446', 'autoFE_f_198', 'autoFE_f_116', 'autoFE_f_206', 'autoFE_f_214']
+            valid_columns = ['autoFE_f_112', 'autoFE_f_468', 'autoFE_f_386', 'autoFE_f_6', 'autoFE_f_333', 'autoFE_f_357', 'autoFE_f_353', 'autoFE_f_194', 'autoFE_f_59', 'autoFE_f_174', 'autoFE_f_191', 'autoFE_f_182', 'autoFE_f_436', 'autoFE_f_261', 'autoFE_f_328', 'autoFE_f_189', 'autoFE_f_8', 'autoFE_f_275', 'autoFE_f_279', 'autoFE_f_223', 'autoFE_f_154', 'autoFE_f_319', 'autoFE_f_221', 'autoFE_f_218', 'autoFE_f_380', 'autoFE_f_402', 'autoFE_f_276', 'autoFE_f_1', 'autoFE_f_253', 'autoFE_f_362', 'autoFE_f_294', 'autoFE_f_108', 'autoFE_f_484', 'autoFE_f_11', 'autoFE_f_200', 'autoFE_f_356', 'autoFE_f_491', 'autoFE_f_2', 'autoFE_f_248', 'autoFE_f_176', 'autoFE_f_449', 'autoFE_f_335', 'autoFE_f_310', 'autoFE_f_479', 'autoFE_f_322', 'autoFE_f_446', 'autoFE_f_198', 'autoFE_f_116', 'autoFE_f_206', 'autoFE_f_214', 'autoFE_f_228', 'autoFE_f_361', 'autoFE_f_460', 'autoFE_f_354', 'autoFE_f_257', 'autoFE_f_78', 'autoFE_f_482', 'autoFE_f_466', 'autoFE_f_287', 'autoFE_f_67', 'autoFE_f_462', 'autoFE_f_481', 'autoFE_f_419', 'autoFE_f_0', 'autoFE_f_7', 'autoFE_f_392', 'autoFE_f_62', 'autoFE_f_135', 'autoFE_f_5', 'autoFE_f_184', 'autoFE_f_246', 'autoFE_f_474', 'autoFE_f_157', 'autoFE_f_304', 'autoFE_f_377', 'autoFE_f_384', 'autoFE_f_187', 'autoFE_f_340', 'autoFE_f_51', 'autoFE_f_281', 'autoFE_f_109', 'autoFE_f_50', 'autoFE_f_141', 'autoFE_f_183', 'autoFE_f_478', 'autoFE_f_54', 'autoFE_f_119', 'autoFE_f_159', 'autoFE_f_265', 'autoFE_f_258', 'autoFE_f_313', 'autoFE_f_101', 'autoFE_f_262', 'autoFE_f_366', 'autoFE_f_330', 'autoFE_f_15', 'autoFE_f_126', 'autoFE_f_404', 'autoFE_f_169', 'autoFE_f_270']
 
             X_valid_src = X_valid_src.drop([column for column in X_valid_src.columns if ('autoFE' in column) & (column not in valid_columns)], axis=1)
             X_valid_tta = X_valid_tta.drop([column for column in X_valid_tta.columns if ('autoFE' in column) & (column not in valid_columns)], axis=1)
+            
+        X_valid_src = X_valid_src.drop([column for column in X_valid_src.columns if 'index' in column], axis=1)
+        X_valid_tta = X_valid_tta.drop([column for column in X_valid_tta.columns if 'index' in column], axis=1)
 
         # Categorical mapping.
 
