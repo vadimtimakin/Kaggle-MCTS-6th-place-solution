@@ -74,7 +74,7 @@ class Config:
     catboost_params = {
         'iterations': 30000,
         'learning_rate': 0.01,
-        'depth': 12,
+        'depth': 10,
         'early_stopping_rounds': 200,
         
         'loss_function': 'RMSE',
