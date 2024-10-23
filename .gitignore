@@ -11,3 +11,5 @@ submission.parquet
 data_checkpoint_200.pickle
 solver_checkpoint_200.pickle
 rmse_mask.pickle
+solver_checkpoint_001.pickle
+data_checkpoint_001.pickle

@@ -144,6 +144,10 @@ class Dataset:
         
     def preprocessing(self, df: pl.DataFrame) -> pl.DataFrame:
         """The basic preprocessing."""
+
+        # Initial data shape.
+        
+        print("Initial shape", df.shape)
         
         # Mirror the dataset.
         
@@ -151,7 +155,7 @@ class Dataset:
             with open('rmse_mask.pickle', 'rb') as file:
                 rmse_mask = pickle.load(file)
 
-            df = df.with_columns(pl.Series('mask', (rmse_mask < 0.01)))
+            df = df.with_columns(pl.Series('mask', (rmse_mask < 100000)))
 
             df = df.with_columns(pl.lit("original").alias("data_mode"))
 
@@ -167,9 +171,7 @@ class Dataset:
 
             df = pl.concat([df, df_mirror])
         
-        # Initial data shape.
-        
-        print("Initial shape", df.shape)
+            print("Shape after data generation", df.shape)
         
         # Drop constant columns.
         
@@ -271,6 +273,8 @@ class Dataset:
 
         df = pl.from_pandas(df)
 
+        print("Shape after feature generation", df.shape)
+
         return df
     
     def build_validation_and_cv_features(self, df: pl.DataFrame) -> pl.DataFrame:
@@ -305,16 +309,16 @@ class Dataset:
 
             src_df = src_df.drop(['index', 'agent1', 'agent2'], strict=False)
 
+            # Filter by RMSE mask.
+
+            src_df = src_df.filter((pl.col('mask') == True) | (pl.col('data_mode') == "original")) 
+            src_df = src_df.drop(['mask'], strict=False)
+            print("Data shape after filtering by mask", src_df.shape)
+
             # Drop duplicates.
 
             columns_for_duplicates = [column for column in src_df.columns if column != "data_mode"]
-
             src_df = src_df.unique(subset=columns_for_duplicates)
-
-            src_df = src_df.filter((pl.col('mask') == True) | (pl.col('data_mode') == "original")) 
-
-            src_df = src_df.drop(['mask'], strict=False)
-
             print("Data shape after dropping duplicates", src_df.shape)
 
             return src_df
@@ -475,6 +479,8 @@ class Solver:
             X_train, X_valid = X.iloc[train_index], X.iloc[valid_index]
             Y_train, Y_valid = Y.iloc[train_index], Y.iloc[valid_index]
 
+            print("X-train and X-valid shapes", X_train.shape, X_valid.shape)
+
             # TF-IDF.
 
             if self.config.n_tf_ids_features != 0:
@@ -493,6 +499,8 @@ class Solver:
             X_train = X_train[src_columns]
             X_valid_tta = X_valid[tta_columns].rename(columns={column: column.replace('tta', 'src') for column in tta_columns})
             X_valid = X_valid[src_columns]
+
+            print("Shape with source features", X_train.shape, X_valid.shape)
             
             # Apply the OpenFE features.
 
@@ -527,7 +535,7 @@ class Solver:
             X_valid = X_valid.drop([column for column in X_valid.columns if 'index' in column], axis=1)
             X_valid_tta = X_valid_tta.drop([column for column in X_valid_tta.columns if 'index' in column], axis=1)
 
-            print('Shape with OpenFE features', X_train.shape)
+            print('Shape with OpenFE features', X_train.shape, X_valid.shape)
 
             # Separate original and mirrored data.
 
@@ -541,7 +549,7 @@ class Solver:
             X_valid_src = X_valid_src.drop(["data_mode"], axis=1)
             X_valid_tta = X_valid_tta.drop(["data_mode"], axis=1)
 
-            print('Original features shape', X_train.shape)
+            print('Original features shape', X_train.shape, X_valid_src.shape)
 
             # Categorical mapping.
 
