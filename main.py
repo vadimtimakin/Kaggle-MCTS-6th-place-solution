@@ -36,7 +36,7 @@ warnings.filterwarnings('ignore')
 
 IS_TRAIN = True
 LOCAL = True
-IS_RERUN = True
+IS_RERUN = False
 
 
 # --- Config ---
@@ -148,6 +148,11 @@ class Dataset:
         # Mirror the dataset.
         
         if self.config.is_train:
+            with open('rmse_mask.pickle', 'rb') as file:
+                rmse_mask = pickle.load(file)
+
+            df = df.with_columns(pl.Series('mask', (rmse_mask < 0.01)))
+
             df = df.with_columns(pl.lit("original").alias("data_mode"))
 
             df_mirror = df.clone()
@@ -304,7 +309,11 @@ class Dataset:
 
             columns_for_duplicates = [column for column in src_df.columns if column != "data_mode"]
 
-            # src_df = src_df.unique(subset=columns_for_duplicates)
+            src_df = src_df.unique(subset=columns_for_duplicates)
+
+            src_df = src_df.filter((pl.col('mask') == True) | (pl.col('data_mode') == "original")) 
+
+            src_df = src_df.drop(['mask'], strict=False)
 
             print("Data shape after dropping duplicates", src_df.shape)
 

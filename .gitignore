@@ -10,3 +10,4 @@ openfe_tmp_data.feather
 submission.parquet
 data_checkpoint_200.pickle
 solver_checkpoint_200.pickle
+rmse_mask.pickle
