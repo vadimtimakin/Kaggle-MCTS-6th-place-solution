@@ -78,6 +78,8 @@ class Config:
         'early_stopping_rounds': 200,
         
         'loss_function': 'RMSE',
+        'eval_metric': 'RMSE',
+
         'task_type': 'GPU',
         'verbose': 1000,
         'thread_count': 14,
@@ -155,7 +157,7 @@ class Dataset:
             with open('rmse_mask.pickle', 'rb') as file:
                 rmse_mask = pickle.load(file)
 
-            df = df.with_columns(pl.Series('mask', (rmse_mask < 100000)))
+            df = df.with_columns(pl.Series('mask', (rmse_mask < 0.01)))
 
             df = df.with_columns(pl.lit("original").alias("data_mode"))
 
@@ -170,6 +172,10 @@ class Dataset:
             )
 
             df = pl.concat([df, df_mirror])
+
+            df = df.with_columns(
+                (pl.col("num_wins_agent1") + pl.col("num_losses_agent1") + pl.col("num_draws_agent1")).alias("num_games")
+            )
         
             print("Shape after data generation", df.shape)
         
@@ -311,7 +317,7 @@ class Dataset:
 
             # Filter by RMSE mask.
 
-            src_df = src_df.filter((pl.col('mask') == True) | (pl.col('data_mode') == "original")) 
+            # src_df = src_df.filter((pl.col('mask') == True) | (pl.col('data_mode') == "original")) 
             src_df = src_df.drop(['mask'], strict=False)
             print("Data shape after filtering by mask", src_df.shape)
 
