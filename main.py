@@ -34,7 +34,7 @@ warnings.filterwarnings('ignore')
 
 # --- Run mode ---
 
-IS_TRAIN = True
+IS_TRAIN = False
 LOCAL = True
 IS_RERUN = False
 
@@ -55,12 +55,17 @@ class Config:
     # Paths
     
     path_to_train_dataset = '/home/toefl/K/MCTS/dataset/train.csv' if LOCAL else '/kaggle/input/um-game-playing-strength-of-mcts-variants/train.csv' 
-    path_to_save_data_checkpoint = 'data_checkpoint.pickle'     # Drop columns, categorical columns, etc.
-    path_to_load_data_checkpoint = 'data_checkpoint.pickle' if LOCAL else '/kaggle/input/mcts-solution-checkpoint/data_checkpoint.pickle'
-    path_to_save_solver_checkpoint = 'solver_checkpoint.pickle' # Models, weights, etc.
-    path_to_load_solver_checkpoint = 'solver_checkpoint.pickle' if LOCAL else '/kaggle/input/mcts-solution-checkpoint/solver_checkpoint.pickle'
+    path_to_save_data_checkpoint = 'checkpoints/data_checkpoint.pickle'     # Drop columns, categorical columns, etc.
+    path_to_save_solver_checkpoint = 'checkpoints/solver_checkpoint.pickle' # Models, weights, etc.
+
     path_to_load_features = 'feature.pickle' if LOCAL else '/kaggle/input/mcts-solution-checkpoint/feature.pickle'
     path_to_tfidf = '/home/toefl/K/MCTS/dataset/tf_idf' if LOCAL else '/kaggle/input/mcts-solution-checkpoint/tf_idf'
+    path_to_load_data_checkpoint = 'checkpoints/data_checkpoint.pickle' if LOCAL else '/kaggle/input/mcts-solution-checkpoint/data_checkpoint.pickle'
+
+    path_to_load_solver_checkpoint = {
+        "num_games": 'checkpoints/solver_checkpoint_numgames.pickle' if LOCAL else '/kaggle/input/mcts-solution-checkpoint/solver_checkpoint_numgames.pickle', 
+        "main": 'checkpoints/solver_checkpoint.pickle' if LOCAL else '/kaggle/input/mcts-solution-checkpoint/solver_checkpoint.pickle'
+    }
     
     # Training
 
@@ -172,10 +177,6 @@ class Dataset:
             )
 
             df = pl.concat([df, df_mirror])
-
-            df = df.with_columns(
-                (pl.col("num_wins_agent1") + pl.col("num_losses_agent1") + pl.col("num_draws_agent1")).alias("num_games")
-            )
         
             print("Shape after data generation", df.shape)
         
@@ -407,7 +408,7 @@ class Solver:
         self.rerun = rerun
         
         try:
-            with open(config.path_to_load_solver_checkpoint, "rb") as f:
+            with open(config.path_to_load_solver_checkpoint["main"], "rb") as f:
                 self.models = pickle.load(f)
         except FileNotFoundError:
             self.models = {}
@@ -680,6 +681,13 @@ class Solver:
             
     def fit(self, df: pl.DataFrame, data_checkpoint: dict, oof_features=None) -> dict:
         """Training."""
+
+        # Meta features.
+
+        with open(self.config.path_to_load_solver_checkpoint["num_games"], 'rb') as file:
+            checkpoint = pickle.load(file)
+            df["num_games"] = checkpoint["catboost"]["oof_preds"]
+            del checkpoint
         
         # Select the feature and the targets.
         
@@ -781,7 +789,24 @@ class Solver:
                 
         X_valid_tta = X_valid_tta.astype(cat_mapping)
 
-        # Inference.
+        # Inference | NumGames MetaModel.
+
+        with open(config.path_to_load_solver_checkpoint["num_games"], "rb") as f:
+            models = pickle.load(f)
+
+        prediction = np.zeros(len(X))
+
+        for fold in range(self.config.n_splits):    
+
+            model = models["catboost"]["models"][fold]
+            preds = model.predict(X_valid_src)
+
+            prediction += np.clip(preds, -1, 1) / self.config.n_splits
+
+        X["num_games"] = prediction
+        del models
+
+        # Inference | Main.
 
         prediction = np.zeros(len(X))
         
@@ -827,7 +852,7 @@ if not IS_TRAIN:
     config = Config()   
     
     set_seed(config.seed)
-    dataset = Dataset(config)
+    dataset = Dataset(config, rerun=False)
     solver = Solver(config, rerun=False)
 
     df_train = pl.read_csv(config.path_to_train_dataset)
