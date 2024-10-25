@@ -34,7 +34,7 @@ warnings.filterwarnings('ignore')
 
 # --- Run mode ---
 
-IS_TRAIN = False
+IS_TRAIN = True
 LOCAL = True
 IS_RERUN = False
 
@@ -64,7 +64,8 @@ class Config:
 
     path_to_load_solver_checkpoint = {
         "num_games": 'checkpoints/solver_checkpoint_numgames.pickle' if LOCAL else '/kaggle/input/mcts-solution-checkpoint/solver_checkpoint_numgames.pickle', 
-        "main": 'checkpoints/solver_checkpoint.pickle' if LOCAL else '/kaggle/input/mcts-solution-checkpoint/solver_checkpoint.pickle'
+        "main": 'checkpoints/solver_checkpoint.pickle' if LOCAL else '/kaggle/input/mcts-solution-checkpoint/solver_checkpoint.pickle',
+        "draw": 'checkpoints/solver_checkpoint_draw.pickle' if LOCAL else '/kaggle/input/mcts-solution-checkpoint/solver_checkpoint_draw.pickle'
     }
     
     # Training
@@ -159,7 +160,7 @@ class Dataset:
         # Mirror the dataset.
         
         if self.config.is_train:
-            with open('rmse_mask.pickle', 'rb') as file:
+            with open('checkpoints/rmse_mask.pickle', 'rb') as file:
                 rmse_mask = pickle.load(file)
 
             df = df.with_columns(pl.Series('mask', (rmse_mask < 0.01)))
@@ -173,6 +174,7 @@ class Dataset:
                 pl.col("agent2").alias("agent1"),
                 (pl.col("utility_agent1") * -1).alias("utility_agent1"),
                 (1 - pl.col("AdvantageP1")).alias("AdvantageP1"),
+                (1 - pl.col("Balance")).alias("Balance"),
                 pl.lit("mirror").alias("data_mode")
             )
 
@@ -684,10 +686,10 @@ class Solver:
 
         # Meta features.
 
-        with open(self.config.path_to_load_solver_checkpoint["num_games"], 'rb') as file:
-            checkpoint = pickle.load(file)
-            df["num_games"] = checkpoint["catboost"]["oof_preds"]
-            del checkpoint
+        # with open(self.config.path_to_load_solver_checkpoint["num_games"], 'rb') as file:
+        #     checkpoint = pickle.load(file)
+        #     df["num_games"] = checkpoint["catboost"]["oof_preds"]
+        #     del checkpoint
         
         # Select the feature and the targets.
         
