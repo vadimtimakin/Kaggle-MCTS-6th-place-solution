@@ -529,8 +529,9 @@ class Solver:
                # ofe_features = [ofe_features[i] for i in valid_features]
 
             if self.config.n_openfe_features != (0, 0):
+                X_train, _ = transform(X_train, X_valid_tta[:10], ofe_features, n_jobs=1)
                 _, X_valid = transform(X_train[:10], X_valid, ofe_features, n_jobs=1)
-                X_train, X_valid_tta = transform(X_train, X_valid_tta, ofe_features, n_jobs=1)
+                _, X_valid_tta = transform(X_train[:10], X_valid_tta, ofe_features, n_jobs=1)
 
                 valid_columns = ['autoFE_f_112', 'autoFE_f_468', 'autoFE_f_386', 'autoFE_f_6', 'autoFE_f_333', 'autoFE_f_357', 'autoFE_f_353', 'autoFE_f_194', 'autoFE_f_59', 'autoFE_f_174', 'autoFE_f_191', 'autoFE_f_182', 'autoFE_f_436', 'autoFE_f_261', 'autoFE_f_328', 'autoFE_f_189', 'autoFE_f_8', 'autoFE_f_275', 'autoFE_f_279', 'autoFE_f_223', 'autoFE_f_154', 'autoFE_f_319', 'autoFE_f_221', 'autoFE_f_218', 'autoFE_f_380', 'autoFE_f_402', 'autoFE_f_276', 'autoFE_f_1', 'autoFE_f_253', 'autoFE_f_362', 'autoFE_f_294', 'autoFE_f_108', 'autoFE_f_484', 'autoFE_f_11', 'autoFE_f_200', 'autoFE_f_356', 'autoFE_f_491', 'autoFE_f_2', 'autoFE_f_248', 'autoFE_f_176', 'autoFE_f_449', 'autoFE_f_335', 'autoFE_f_310', 'autoFE_f_479', 'autoFE_f_322', 'autoFE_f_446', 'autoFE_f_198', 'autoFE_f_116', 'autoFE_f_206', 'autoFE_f_214']
 
