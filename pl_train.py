@@ -17,7 +17,7 @@ from catboost import CatBoostRegressor, CatBoostClassifier
 
 from sklearn.metrics import mean_squared_error
 from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.model_selection import StratifiedGroupKFold
+from sklearn.model_selection import StratifiedGroupKFold, StratifiedKFold
 
 from typing import Tuple, Union
 
@@ -56,7 +56,7 @@ class Config:
     
     path_to_train_dataset = '/home/toefl/K/MCTS/dataset/train.csv' if LOCAL else '/kaggle/input/um-game-playing-strength-of-mcts-variants/train.csv' 
     path_to_save_data_checkpoint = 'checkpoints/data_checkpoint.pickle'     # Drop columns, categorical columns, etc.
-    path_to_save_solver_checkpoint = 'checkpoints/solver_checkpoint.pickle' # Models, weights, etc.
+    path_to_save_solver_checkpoint = 'checkpoints/solver_checkpoint_pl.pickle' # Models, weights, etc.
 
     path_to_load_features = 'feature.pickle' if LOCAL else '/kaggle/input/mcts-solution-checkpoint/feature.pickle'
     path_to_tfidf = '/home/toefl/K/MCTS/dataset/tf_idf' if LOCAL else '/kaggle/input/mcts-solution-checkpoint/tf_idf'
@@ -65,8 +65,7 @@ class Config:
     path_to_load_solver_checkpoint = {
         "num_games": 'checkpoints/solver_checkpoint_numgames.pickle' if LOCAL else '/kaggle/input/mcts-solution-checkpoint/solver_checkpoint_numgames.pickle', 
         "main": 'checkpoints/solver_checkpoint.pickle' if LOCAL else '/kaggle/input/mcts-solution-checkpoint/solver_checkpoint.pickle',
-        "draw": 'checkpoints/solver_checkpoint_draw.pickle' if LOCAL else '/kaggle/input/mcts-solution-checkpoint/solver_checkpoint_draw.pickle',
-        "pl": 'checkpoints/solver_checkpoint_pl.pickle',
+        "draw": 'checkpoints/solver_checkpoint_draw.pickle' if LOCAL else '/kaggle/input/mcts-solution-checkpoint/solver_checkpoint_draw.pickle'
     }
     
     # Training
@@ -157,32 +156,7 @@ class Dataset:
         # Initial data shape.
         
         print("Initial shape", df.shape)
-        
-        # Mirror the dataset.
-        
-        if self.config.is_train:
-            with open('checkpoints/rmse_mask.pickle', 'rb') as file:
-                rmse_mask = pickle.load(file)
 
-            df = df.with_columns(pl.Series('mask', (rmse_mask < 0.01)))
-
-            df = df.with_columns(pl.lit("original").alias("data_mode"))
-
-            df_mirror = df.clone()
-
-            df_mirror = df_mirror.with_columns(
-                pl.col("agent1").alias("agent2"),
-                pl.col("agent2").alias("agent1"),
-                (pl.col("utility_agent1") * -1).alias("utility_agent1"),
-                (1 - pl.col("AdvantageP1")).alias("AdvantageP1"),
-                (1 - pl.col("Balance")).alias("Balance"),
-                pl.lit("mirror").alias("data_mode")
-            )
-
-            df = pl.concat([df, df_mirror])
-        
-            print("Shape after data generation", df.shape)
-        
         # Drop constant columns.
         
         if self.config.is_train:
@@ -195,6 +169,18 @@ class Dataset:
         df = df.drop(drop_columns)
         
         print('Shape after dropping constant columns:', df.shape)
+        
+        # Mirror the dataset.
+        
+        if self.config.is_train:
+            with open('checkpoints/rmse_mask.pickle', 'rb') as file:
+                rmse_mask = pickle.load(file)
+
+            df = df.with_columns(pl.Series('mask', (rmse_mask < 0.01)))
+
+            df = df.with_columns(pl.lit("original").alias("data_mode"))
+        
+            print("Shape after data generation", df.shape)
         
         # Basic information.
         
@@ -301,12 +287,11 @@ class Dataset:
             df = df.with_columns(pl.lit(0).alias("fold"))
             df = df.with_row_index('index')
 
-            cv = StratifiedGroupKFold(n_splits=self.config.n_splits, shuffle=True, random_state=self.config.seed)
+            cv = StratifiedKFold(n_splits=self.config.n_splits, shuffle=True, random_state=self.config.seed)
 
             for fold, (_, index) in enumerate(cv.split(
                     df,
                     df["utility_agent1"].alias("utility_agent1").cast(pl.Utf8) + "_" + df["agent1"],
-                    df["GameRulesetName"]
                 )):
                 df = df.with_columns(
                     pl.when(pl.col('index').is_in(index))
@@ -315,7 +300,7 @@ class Dataset:
                     .alias('fold')
                 )
 
-            src_df = src_df.with_columns(pl.Series("fold", np.concatenate((df["fold"].to_numpy(), df["fold"].to_numpy()))))
+            src_df = df
 
             src_df = src_df.drop(['index', 'agent1', 'agent2'], strict=False)
 
@@ -342,14 +327,14 @@ class Dataset:
     def drop_columns(self, df: pl.DataFrame) -> pl.DataFrame:
         """Drop the certain columns."""
 
+        columns_to_drop = []
+        
         if self.config.is_train:
-            columns_to_drop = [
+            columns_to_drop += [
                 'num_wins_agent1',
                 'num_draws_agent1',
                 'num_losses_agent1',
             ]
-        else:
-            columns_to_drop = []
         
         df = df.drop(columns_to_drop, strict=False)
         
@@ -489,30 +474,30 @@ class Solver:
 
             print("X-train and X-valid shapes", X_train.shape, X_valid.shape)
 
-            # # Feature encoding.
+            # Feature encoding
 
-            # features_to_encode = [
-            #     'GameRulesetName',
-            # ]
+            features_to_encode = [
+                'GameRulesetName',
+            ]
 
-            # print("Feature encoding")
-            # for feature in tqdm(features_to_encode):
+            print("Feature encoding")
+            for feature in tqdm(features_to_encode):
 
-            #     # Original
-            #     m = {}
-            #     for u in X_train[feature].unique():
-            #         m[u] = Y_train[X_train[feature] == u].mean()
-            #     X_train[feature] = X_train[feature].map(m)
-            #     X_valid[feature] = X_valid[feature].map(m)
+                # Original
+                m = {}
+                for u in X_train[feature].unique():
+                    m[u] = Y_train[X_train[feature] == u].mean()
+                X_train[feature] = X_train[feature].map(m)
+                X_valid[feature] = X_valid[feature].map(m)
 
-            #     # TTA
-            #     m = {}
-            #     feature = feature.replace('src', 'tta')
-            #     for u in X_train[feature].unique():
-            #         m[u] = Y_train[X_train[feature] == u].mean()
-            #     X_valid[feature] = X_valid[feature].map(m)
+                # TTA
+                m = {}
+                feature = feature.replace('src', 'tta')
+                for u in X_train[feature].unique():
+                    m[u] = Y_train[X_train[feature] == u].mean()
+                X_valid[feature] = X_valid[feature].map(m)
 
-            # print("Shape after feature encoding", X_train.shape)
+            print("Shape after feature encoding", X_train.shape)
 
             # TF-IDF.
 
@@ -566,12 +551,6 @@ class Solver:
             X_valid_tta = X_valid_tta.fillna(-100)
 
             print('Shape with OpenFE features', X_train.shape, X_valid.shape)
-
-            # Pseudo labeling.
-
-            X_train = X_train.drop(["GameRulesetName"], axis=1)
-            X_valid = X_valid.drop(["GameRulesetName"], axis=1)
-            X_valid_tta = X_valid_tta.drop(["GameRulesetName"], axis=1)
 
             # Separate original and mirrored data.
 
@@ -869,8 +848,6 @@ if not IS_TRAIN:
         
         df, data_checkpoint = dataset.get_dataset(test)
         preds = solver.predict(df, df_train, data_checkpoint)
-
-        # preds[df["GameTreeComplexity"] == 0] = 2 * df[df["GameTreeComplexity"] == 0]["AdvantageP1"] - 1
 
         return sample_sub.with_columns(pl.Series('utility_agent1', preds))
     
