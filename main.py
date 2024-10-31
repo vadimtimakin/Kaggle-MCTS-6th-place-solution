@@ -64,7 +64,7 @@ class Config:
 
     path_to_load_solver_checkpoint = {
         "num_games": 'checkpoints/solver_checkpoint_numgames.pickle' if LOCAL else '/kaggle/input/mcts-solution-checkpoint/solver_checkpoint_numgames.pickle', 
-        "main": 'checkpoints/solver_checkpoint_src.pickle' if LOCAL else '/kaggle/input/mcts-solution-checkpoint/solver_checkpoint.pickle',
+        "main": 'checkpoints/solver_checkpoint.pickle' if LOCAL else '/kaggle/input/mcts-solution-checkpoint/solver_checkpoint.pickle',
         "draw": 'checkpoints/solver_checkpoint_draw.pickle' if LOCAL else '/kaggle/input/mcts-solution-checkpoint/solver_checkpoint_draw.pickle',
         "pl": 'checkpoints/solver_checkpoint_pl.pickle',
     }
@@ -209,37 +209,15 @@ class Dataset:
         # Split the agent string.
 
         df = df.with_columns(
-            pl.col('agent1').str.extract(r'MCTS-(.*)-(.*)-(.*)-(.*)', 1).alias('src_p1_selection'),
-            pl.col('agent1').str.extract(r'MCTS-(.*)-(.*)-(.*)-(.*)', 2).alias('src_p1_exploration'),
-            pl.col('agent1').str.extract(r'MCTS-(.*)-(.*)-(.*)-(.*)', 3).alias('src_p1_playout'),
-            pl.col('agent1').str.extract(r'MCTS-(.*)-(.*)-(.*)-(.*)', 4).alias('src_p1_bounds'),
-            pl.col('agent2').str.extract(r'MCTS-(.*)-(.*)-(.*)-(.*)', 1).alias('src_p2_selection'),
-            pl.col('agent2').str.extract(r'MCTS-(.*)-(.*)-(.*)-(.*)', 2).alias('src_p2_exploration'),
-            pl.col('agent2').str.extract(r'MCTS-(.*)-(.*)-(.*)-(.*)', 3).alias('src_p2_playout'),
-            pl.col('agent2').str.extract(r'MCTS-(.*)-(.*)-(.*)-(.*)', 4).alias('src_p2_bounds'),
-
-            pl.col('agent2').str.extract(r'MCTS-(.*)-(.*)-(.*)-(.*)', 1).alias('tta_p1_selection'),
-            pl.col('agent2').str.extract(r'MCTS-(.*)-(.*)-(.*)-(.*)', 2).alias('tta_p1_exploration'),
-            pl.col('agent2').str.extract(r'MCTS-(.*)-(.*)-(.*)-(.*)', 3).alias('tta_p1_playout'),
-            pl.col('agent2').str.extract(r'MCTS-(.*)-(.*)-(.*)-(.*)', 4).alias('tta_p1_bounds'),
-            pl.col('agent1').str.extract(r'MCTS-(.*)-(.*)-(.*)-(.*)', 1).alias('tta_p2_selection'),
-            pl.col('agent1').str.extract(r'MCTS-(.*)-(.*)-(.*)-(.*)', 2).alias('tta_p2_exploration'),
-            pl.col('agent1').str.extract(r'MCTS-(.*)-(.*)-(.*)-(.*)', 3).alias('tta_p2_playout'),
-            pl.col('agent1').str.extract(r'MCTS-(.*)-(.*)-(.*)-(.*)', 4).alias('tta_p2_bounds')
+            pl.col('agent1').str.extract(r'MCTS-(.*)-(.*)-(.*)-(.*)', 1).alias('p1_selection'),
+            pl.col('agent1').str.extract(r'MCTS-(.*)-(.*)-(.*)-(.*)', 2).alias('p1_exploration'),
+            pl.col('agent1').str.extract(r'MCTS-(.*)-(.*)-(.*)-(.*)', 3).alias('p1_playout'),
+            pl.col('agent1').str.extract(r'MCTS-(.*)-(.*)-(.*)-(.*)', 4).alias('p1_bounds'),
+            pl.col('agent2').str.extract(r'MCTS-(.*)-(.*)-(.*)-(.*)', 1).alias('p2_selection'),
+            pl.col('agent2').str.extract(r'MCTS-(.*)-(.*)-(.*)-(.*)', 2).alias('p2_exploration'),
+            pl.col('agent2').str.extract(r'MCTS-(.*)-(.*)-(.*)-(.*)', 3).alias('p2_playout'),
+            pl.col('agent2').str.extract(r'MCTS-(.*)-(.*)-(.*)-(.*)', 4).alias('p2_bounds'),
         )
-
-        # TTA fundament.
-
-        df = df.with_columns(
-            pl.col('agent1').alias('src_p1_agent'),
-            pl.col('agent2').alias('src_p2_agent'),
-            pl.col('agent1').alias('tta_p2_agent'),
-            pl.col('agent2').alias('tta_p1_agent'),
-            pl.col('AdvantageP1').alias('src_AdvantageP1'),
-            (1 - pl.col('AdvantageP1')).alias('tta_AdvantageP1'),
-        )
-
-        df = df.drop(['AdvantageP1'], strict=False)
 
         # Feature engineering.
 
@@ -261,25 +239,22 @@ class Dataset:
              pl.col('HopDecisionEnemyToEnemy') + 
              pl.col('HopDecisionFriendToEnemy') + 
              pl.col('SlideDecisionToEnemy')).alias('AggressiveActionsRatio'),
-
-            (pl.col('src_AdvantageP1') / (pl.col('Balance') + 1e-15)).alias('src_AdvantageBalanceRatio'),
-            (pl.col('src_AdvantageP1') / (pl.col('DurationActions') + 1e-15)).alias('src_AdvantageTimeImpact'),
-            (pl.col('OutcomeUniformity') / (pl.col('src_AdvantageP1') + 1e-15)).alias('src_OutcomeUniformity/AdvantageP1'),
-
-            (pl.col('tta_AdvantageP1') / (pl.col('Balance') + 1e-15)).alias('tta_AdvantageBalanceRatio'),
-            (pl.col('tta_AdvantageP1') / (pl.col('DurationActions') + 1e-15)).alias('tta_AdvantageTimeImpact'),
-            (pl.col('OutcomeUniformity') / (pl.col('tta_AdvantageP1') + 1e-15)).alias('tta_OutcomeUniformity/AdvantageP1'),
+            (pl.col('AdvantageP1') / (pl.col('Balance') + 1e-15)).alias('AdvantageBalanceRatio'),
+            (pl.col('AdvantageP1') / (pl.col('DurationActions') + 1e-15)).alias('AdvantageTimeImpact'),
+            (pl.col('OutcomeUniformity') / (pl.col('AdvantageP1') + 1e-15)).alias('OutcomeUniformity/AdvantageP1'),
         ])
         
         df = df.to_pandas()
 
         # Cross-features.
 
+        df["p1_agent"] = df["agent1"]
+        df["p2_agent"] = df["agent2"]
+
         cols = ["agent", "selection", "exploration", "playout", "bounds"]
         for c1 in cols:
             for c2 in cols:
-                df[f"src_{c1}_{c2}"] = df[f"src_p1_{c1}"].astype(str) + df[f"src_p1_{c2}"].astype(str)
-                df[f"tta_{c1}_{c2}"] = df[f"tta_p1_{c1}"].astype(str) + df[f"tta_p1_{c2}"].astype(str)
+                df[f"{c1}_{c2}"] = df[f"p1_{c1}"].astype(str) + df[f"p1_{c2}"].astype(str)
 
         df = pl.from_pandas(df)
 
@@ -317,12 +292,10 @@ class Dataset:
 
             src_df = src_df.with_columns(pl.Series("fold", np.concatenate((df["fold"].to_numpy(), df["fold"].to_numpy()))))
 
-            src_df = src_df.drop(['index', 'agent1', 'agent2'], strict=False)
-
             # Filter by RMSE mask.
 
             # src_df = src_df.filter((pl.col('mask') == True) | (pl.col('data_mode') == "original")) 
-            src_df = src_df.drop(['mask'], strict=False)
+            src_df = src_df.drop(['mask', 'index', 'agent1', 'agent2'], strict=False)
             print("Data shape after filtering by mask", src_df.shape)
 
             # Drop duplicates.
@@ -523,17 +496,6 @@ class Solver:
             else:
                 X_train = X_train.drop(['EnglishRules', 'LudRules'], axis=1)
                 X_valid = X_valid.drop(['EnglishRules', 'LudRules'], axis=1)
-
-            # TTA processing.
-
-            src_columns = [column for column in X_train.columns.tolist() if 'tta' not in column and column] 
-            tta_columns = [column.replace('src', 'tta') for column in src_columns]
-
-            X_train = X_train[src_columns]
-            X_valid_tta = X_valid[tta_columns].rename(columns={column: column.replace('tta', 'src') for column in tta_columns})
-            X_valid = X_valid[src_columns]
-
-            print("Shape with source features", X_train.shape, X_valid.shape)
             
             # Apply the OpenFE features.
 
@@ -551,9 +513,8 @@ class Solver:
 
             if self.config.n_openfe_features != (0, 0):
                 valid_features = sorted([112, 468, 386, 6, 333, 357, 353, 194, 59, 174, 191, 182, 436, 261, 328, 189, 8, 275, 279, 223, 154, 319, 221, 218, 380, 402, 276, 1, 253, 362, 294, 108, 484, 11, 200, 356, 491, 2, 248, 176, 449, 335, 310, 479, 322, 446, 198, 116, 206, 214])
-                X_train, _ = transform(X_train, X_valid_tta[:10], ofe_features, valid_features, n_jobs=1)
-                _, X_valid = transform(X_train[:10], X_valid, ofe_features, valid_features, n_jobs=1)
-                _, X_valid_tta = transform(X_train[:10], X_valid_tta, ofe_features, valid_features, n_jobs=1)
+                X_train, _ = transform(X_train, X_train[:10], ofe_features, valid_features, n_jobs=1)
+                X_valid, _ = transform(X_valid, X_valid[:10], ofe_features, valid_features, n_jobs=1)
                 
                 del ofe_features
 
@@ -561,11 +522,9 @@ class Solver:
 
             X_train = X_train.drop([column for column in X_train.columns if 'index' in column] + columns_to_drop, axis=1)
             X_valid = X_valid.drop([column for column in X_valid.columns if 'index' in column] + columns_to_drop, axis=1)
-            X_valid_tta = X_valid_tta.drop([column for column in X_valid_tta.columns if 'index' in column] + columns_to_drop, axis=1)
 
             X_train = X_train.fillna(-100)
             X_valid = X_valid.fillna(-100)
-            X_valid_tta = X_valid_tta.fillna(-100)
 
             print('Shape with OpenFE features', X_train.shape, X_valid.shape)
 
@@ -573,19 +532,16 @@ class Solver:
 
             X_train = X_train.drop(["GameRulesetName"], axis=1)
             X_valid = X_valid.drop(["GameRulesetName"], axis=1)
-            X_valid_tta = X_valid_tta.drop(["GameRulesetName"], axis=1)
 
             # Separate original and mirrored data.
 
             mask = X_valid["data_mode"] == "original"
             X_valid_src = X_valid[mask]
-            X_valid_tta = X_valid_tta[mask]
             Y_valid_src = Y_valid[mask]
 
             X_train = X_train.drop(["data_mode"], axis=1)
             X_valid = X_valid.drop(["data_mode"], axis=1)
             X_valid_src = X_valid_src.drop(["data_mode"], axis=1)
-            X_valid_tta = X_valid_tta.drop(["data_mode"], axis=1)
 
             print('Original features shape', X_train.shape, X_valid_src.shape)
 
@@ -602,7 +558,6 @@ class Solver:
             X_train = X_train.astype(cat_mapping)
             X_valid = X_valid.astype(cat_mapping)
             X_valid_src = X_valid_src.astype(cat_mapping)
-            X_valid_tta = X_valid_tta.astype(cat_mapping)
             
             # Create and fit the model.
             
@@ -631,14 +586,10 @@ class Solver:
             
             if self.config.task == "classification":
                 Y_valid_src = Y_valid_src.astype(np.float)
-                preds_original = model.predict(X_valid_src).astype(float)
-                preds_tta = model.predict(X_valid_tta).astype(float) * -1
-                preds = (preds_original + preds_tta) / 2
+                preds = model.predict(X_valid_src).astype(float)
                 preds = preds[0]
             else:
-                preds_original = model.predict(X_valid_src)
-                preds_tta = model.predict(X_valid_tta) * -1
-                preds = (preds_original + preds_tta) / 2
+                preds = model.predict(X_valid_src)
                 full_preds = model.predict(X_valid)
             
             # Save the scores and the metrics.
@@ -647,15 +598,13 @@ class Solver:
             oof_labels[valid_index] = Y_valid
             oof_mask[valid_index] = mask
 
-            score_original = mean_squared_error(Y_valid_src, preds_original, squared=False)
-            score_tta = mean_squared_error(Y_valid_src, preds_tta, squared=False)
-            score = mean_squared_error(Y_valid_src, preds, squared=False)
+            score_original = mean_squared_error(Y_valid_src, preds, squared=False)
+            score = mean_squared_error(Y_valid, full_preds, squared=False)
 
             scores.append(score_original)
 
             print(round(score_original, 4))
-            print(round(score_tta, 4))
-            print(round(score, 4))    
+            print(round(score, 4))  
             
             if not self.rerun:
                 self.models[model_name]["models"][fold] = model
@@ -682,10 +631,6 @@ class Solver:
             
         oof_score = mean_squared_error(oof_labels, oof_preds, squared=False)
         
-        if not self.rerun:
-            self.models[model_name]["features"] = src_columns
-            self.models[model_name]["oof_score"] = oof_score
-
         self.models[model_name]["oof_preds"] = oof_preds
         self.models[model_name]["oof_labels"] = oof_labels
         self.models[model_name]["mode"] = oof_mask
@@ -761,12 +706,6 @@ class Solver:
         
         X = X.rename(columns = lambda x:re.sub('[^A-Za-z0-9_]+', '', x)).reset_index()
 
-        src_columns = [column for column in X.columns.tolist() if 'tta' not in column]
-        tta_columns = [column.replace('src', 'tta') for column in src_columns]
-
-        X_valid_src = X[src_columns]
-        X_valid_tta = X[tta_columns].rename(columns={column: column.replace('tta', 'src') for column in tta_columns})
-
         # Apply OpenFE features.
 
         with open(self.config.path_to_load_features, 'rb') as file:
@@ -783,41 +722,28 @@ class Solver:
 
         if self.config.n_openfe_features != (0, 0):
             valid_features = sorted([112, 468, 386, 6, 333, 357, 353, 194, 59, 174, 191, 182, 436, 261, 328, 189, 8, 275, 279, 223, 154, 319, 221, 218, 380, 402, 276, 1, 253, 362, 294, 108, 484, 11, 200, 356, 491, 2, 248, 176, 449, 335, 310, 479, 322, 446, 198, 116, 206, 214])
-            _, X_valid_src = transform(X_valid_src[:1], X_valid_src, ofe_features, valid_features, n_jobs=1)
-            _, X_valid_tta = transform(X_valid_tta[:1], X_valid_tta, ofe_features, valid_features, n_jobs=1)
+            _, X = transform(X[:1], X, ofe_features, valid_features, n_jobs=1)
 
             del ofe_features
 
         columns_to_drop = ['PieceState', 'GraphStyle', 'MovesOperators', 'SowCCW', 'ScoreDifferenceMedian', 'AbsoluteDirections', 'PushEffectFrequency', 'LineWin', 'LeapDecisionToEmptyFrequency', 'AlquerqueBoardWithOneTriangle', 'TaflStyle', 'Capture', 'Even', 'RegularShape', 'SlideDecisionToFriendFrequency', 'SwapPiecesDecisionFrequency', 'AddDecision', 'LineLossFrequency', 'CheckmateFrequency', 'Multiplication', 'MoveAgain', 'TriangleTiling', 'SetSiteState', 'SwapPlayersDecision', 'RemoveDecision', 'LineOfSight', 'CaptureEnd', 'SquareTiling', 'ForwardsDirection', 'NoProgressEndFrequency', 'Draw', 'Odd', 'Parity', 'ConnectionLossFrequency', 'NoMovesWin', 'SurakartaStyle', 'Checkmate', 'TrackLoop', 'StepEffect', 'StepDecisionToFriend', 'Maximum', 'HopEffect', 'NineMensMorrisBoard', 'TriangleShape', 'FillWinFrequency', 'Style', 'FlipFrequency', 'VoteEffect', 'NoMoves', 'Meta', 'GroupEndFrequency', 'Hand', 'NoMovesEnd', 'CountPiecesMoverComparison', 'FromToDecision', 'StackType', 'IsEnemy', 'AlquerqueBoardWithFourTriangles', 'MancalaFourRows', 'Group', 'HopDecisionFriendToEnemyFrequency', 'NoOwnPiecesWinFrequency', 'CountPiecesComparison', 'VoteDecision', 'NoProgressDrawFrequency', 'RaceEnd', 'SetRotation', 'CrossBoard', 'SwapPlayersEffect', 'PieceRotation', 'ReplacementCapture', 'TerritoryWinFrequency', 'HopDecisionFriendToFriendFrequency', 'NoPieceMover', 'LineEnd', 'LeapDecision', 'PolygonShape', 'SemiRegularTiling', 'EliminatePiecesLossFrequency', 'NumDice', 'FromToDecisionFrequency', 'RemoveEffect', 'FillEndFrequency', 'CanMove', 'StarBoard', 'Track', 'PassEffect', 'ProposeDecisionFrequency', 'ConnectionEnd', 'Modulo', 'ChessComponent', 'NoProgressDraw', 'FromToDecisionEmpty', 'Scoring', 'LineLoss', 'PatternEnd', 'NoTargetPieceWinFrequency', 'NoOwnPiecesEnd', 'PatternEndFrequency', 'Efficiency', 'PenAndPaperStyle', 'ForgetValues', 'MancalaTwoRows', 'DiagonalDirection', 'HopDecision', 'PatternWinFrequency', 'StackState', 'Stack', 'StateType', 'ShowPieceState', 'AlquerqueBoardWithTwoTriangles', 'Math', 'TaflComponent', 'HopDecisionFriendToEmptyFrequency', 'InitialScore', 'PatternWin', 'SquarePyramidalShape', 'Directions', 'Pattern', 'SetMove', 'Division', 'PromotionEffect', 'ScoringLossFrequency', 'ShibumiStyle', 'ScoringWin', 'TrackOwned', 'ShowPieceValue', 'DiamondShape', 'GroupWinFrequency', 'LeapDecisionToEnemy', 'BackwardDirection', 'ScoringLoss', 'AddEffect', 'BackgammonStyle', 'ReachWin', 'Absolute', 'PieceValue', 'ScoringEnd', 'NoTargetPiece', 'HopDecisionFriendToEnemy', 'ScoringDraw', 'NoMovesLoss', 'ConnectionLoss', 'HopDecisionEnemyToEnemyFrequency', 'QueenComponent', 'PawnComponent', 'ShootDecision', 'Implementation', 'GroupEnd', 'NoMovesDrawFrequency', 'RememberValues', 'CircleTiling', 'ThreeMensMorrisBoard', 'FairyChessComponent', 'SetInternalCounter', 'BackwardLeftDirection', 'OppositeDirection', 'PromotionDecision', 'LeapEffect', 'Territory', 'Moves', 'FromToEffect', 'SlideEffect', 'SetCountFrequency', 'BishopComponent', 'CircleShape', 'ReachLoss', 'ProposeDecision', 'PloyComponent', 'XiangqiStyle', 'CheckmateWin', 'DiceD6', 'AggressiveActionsRatio', 'FromToDecisionFriend', 'ProgressCheck', 'ForwardDirection', 'LargePiece', 'HopCaptureMoreThanOne', 'DiceD4', 'LeftwardDirection', 'NoProgressEnd', 'InternalCounter', 'ByDieMove', 'FromToDecisionEnemy', 'CanNotMove', 'Minimum', 'Dice', 'Stochastic', 'HexTiling', 'SameDirection', 'PushEffect', 'ForwardLeftDirection', 'EliminatePiecesLoss', 'DirectionCapture', 'SowCapture', 'StepDecisionToEnemy', 'BackwardRightDirection', 'SlideDecision', 'InitialCost', 'LeapDecisionToEmpty', 'AlquerqueBoardWithEightTriangles', 'GroupWin', 'Tile', 'TerritoryEnd', 'DirectionCaptureFrequency', 'NoBoard', 'NoTargetPieceWin', 'ForwardRightDirection', 'ProposeEffectFrequency', 'TurnKo', 'NoOwnPiecesLossFrequency', 'RotationalDirection', 'SowRemove', 'HopDecisionEnemyToEnemy', 'RookComponent', 'TableStyle', 'TerritoryWin', 'MancalaSixRows', 'MaxDistance', 'NoOwnPiecesLoss', 'Threat', 'PositionalSuperko', 'CaptureSequence', 'NumOffDiagonalDirections', 'ProposeEffect', 'Roll', 'SlideDecisionToFriend', 'LineDraw', 'SetValue', 'GroupDraw', 'SumDice', 'ThreeMensMorrisBoardWithTwoTriangles', 'KingComponent', 'Repetition', 'SurroundCapture', 'Loop', 'NoOwnPiecesWin', 'BranchingFactorChangeNumTimesn', 'RotationDecision', 'LoopEndFrequency', 'InterveneCapture', 'HopDecisionFriendToEmpty', 'EliminatePiecesDrawFrequency', 'DiceD2', 'Edge', 'SetCount', 'RightwardDirection', 'LoopEnd', 'ShogiStyle', 'SwapPiecesDecision', 'FortyStonesWithFourGapsBoard', 'StarShape', 'Boardless', 'MancalaCircular', 'XiangqiComponent', 'ReachLossFrequency', 'Fill', 'SlideDecisionToEnemy', 'JanggiComponent', 'KintsBoard', 'ShogiComponent', 'SowBacktracking', 'Piece', 'InitialRandomPlacement', 'LoopWin', 'LoopWinFrequency', 'Flip', 'FillEnd', 'JanggiStyle', 'ShootDecisionFrequency', 'MancalaThreeRows', 'StrategoComponent', 'RotationDecisionFrequency', 'InterveneCaptureFrequency', 'EliminatePiecesDraw', 'AutoMove', 'PachisiBoard', 'GroupLoss', 'PathExtent', 'VisitedSites', 'Cooperation', 'SetRotationFrequency', 'FillWin', 'SpiralTiling', 'PathExtentEnd', 'SpiralShape', 'Team', 'ReachDrawFrequency', 'LeftwardsDirection', 'ReachDraw', 'PathExtentLoss', 'PathExtentWin', 'LoopLoss', 'RightwardsDirection']
             
-        X_valid_src = X_valid_src.drop([column for column in X_valid_src.columns if 'index' in column] + columns_to_drop, axis=1)
-        X_valid_tta = X_valid_tta.drop([column for column in X_valid_tta.columns if 'index' in column] + columns_to_drop, axis=1)
+        X = X.drop([column for column in X.columns if 'index' in column] + columns_to_drop, axis=1)
+        
+        X = X.fillna(-100)
 
-        X_valid_src = X_valid_src.fillna(-100)
-        X_valid_tta = X_valid_tta.fillna(-100)
-
-        X_valid_src = X_valid_src.drop(["GameRulesetName"], axis=1)
-        X_valid_tta = X_valid_tta.drop(["GameRulesetName"], axis=1)
+        X = X.drop(["GameRulesetName"], axis=1)
 
         # Categorical mapping.
 
         cat_mapping = {}
-        for feature in X_valid_src.columns:
-            if X_valid_src[feature].dtype == object:
+        for feature in X.columns:
+            if X[feature].dtype == object:
                 cat_mapping[feature] = "category"
             else:
                 cat_mapping[feature] = float
 
-        X_valid_src = X_valid_src.astype(cat_mapping)
-        
-        cat_mapping = {}
-        for feature in X_valid_tta.columns:
-            if X_valid_tta[feature].dtype == object:
-                cat_mapping[feature] = "category"
-            else:
-                cat_mapping[feature] = float
-                
-        X_valid_tta = X_valid_tta.astype(cat_mapping)
+        X = X.astype(cat_mapping)
 
         # Inference | Main.
 
@@ -833,9 +759,7 @@ class Solver:
 
                 model = self.models[model_name]["models"][fold]
                     
-                preds_original = model.predict(X_valid_src)
-                # preds_tta = model.predict(X_valid_tta) * -1
-                preds += (preds_original + preds_original) / 2 / self.config.n_splits
+                preds = model.predict(X) / self.config.n_splits
 
             prediction += np.clip(preds, -1, 1) * weight
             
