@@ -10,7 +10,6 @@ import pickle
 import numpy as np
 import polars as pl
 import pandas as pd
-from tqdm import tqdm
 
 import lightgbm as lgb
 from catboost import CatBoostRegressor, CatBoostClassifier
@@ -20,6 +19,7 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.model_selection import StratifiedGroupKFold
 
 from typing import Tuple, Union
+from itertools import permutations, combinations
 
 import sys
 sys.path.append('/home/toefl/K/MCTS/dataset/')
@@ -154,23 +154,6 @@ class Dataset:
         # Initial data shape.
         
         print("Initial shape", df.shape)
-
-        # Normalization.
-
-        # columns_to_average = ['Behaviour', 'StateRepetition', 'Duration', 'Complexity', 'BoardCoverage', 'GameOutcome', 'StateEvaluation', 'Clarity', 'Decisiveness', 'Drama', 'MoveEvaluation', 'StateEvaluationDifference', 'BoardSitesOccupied', 'BranchingFactor', 'DecisionFactor', 'MoveDistance', 'PieceNumber', 'ScoreDifference']
-
-        # average_df = df.group_by("GameRulesetName").agg([
-        #     pl.col(column).mean().alias(f"avg_{column}") for column in columns_to_average
-        # ])
-
-        # df_with_averages = df.join(average_df, on="GameRulesetName")
-
-        # for column in columns_to_average:
-        #     df_with_averages = df_with_averages.with_columns(
-        #         pl.col(f"avg_{column}").alias(column)
-        #     )
-
-        # df = df_with_averages.drop([f"avg_{column}" for column in columns_to_average])
 
         # Mirror the dataset.
         
@@ -310,6 +293,9 @@ class Dataset:
         
         if self.config.is_train:
 
+            with open(self.config.path_to_load_solver_checkpoint["pl"], 'rb') as file:
+                models = pickle.load(file)["catboost"]["models"][:1]
+
             # Build the validation based on the original data and then assign the same folds to the mirror data to avoid the leak.
 
             src_df = df.clone()
@@ -321,11 +307,18 @@ class Dataset:
 
             cv = StratifiedGroupKFold(n_splits=self.config.n_splits, shuffle=True, random_state=self.config.seed)
 
-            for fold, (_, index) in enumerate(cv.split(
-                    df,
-                    df["utility_agent1"].alias("utility_agent1").cast(pl.Utf8) + "_" + df["agent1"],
-                    df["GameRulesetName"]
-                )):
+            split = cv.split(
+                df,
+                df["utility_agent1"].alias("utility_agent1").cast(pl.Utf8) + "_" + df["agent1"],
+                df["GameRulesetName"]
+            )
+
+            pl_folds = []
+
+            for fold, (_, index) in enumerate(split):
+
+                # Set fold index.
+
                 df = df.with_columns(
                     pl.when(pl.col('index').is_in(index))
                     .then(pl.lit(fold))
@@ -333,7 +326,104 @@ class Dataset:
                     .alias('fold')
                 )
 
-            src_df = src_df.with_columns(pl.Series("fold", np.concatenate((df["fold"].to_numpy(), df["fold"].to_numpy()))))
+                # Pseudo labeling part.
+
+                df_pl = df[index]
+
+                # Group normalization for PL.
+
+                columns_to_average = ['Behaviour', 'StateRepetition', 'Duration', 'Complexity', 'BoardCoverage', 'GameOutcome', 'StateEvaluation', 'Clarity', 'Decisiveness', 'Drama', 'MoveEvaluation', 'StateEvaluationDifference', 'BoardSitesOccupied', 'BranchingFactor', 'DecisionFactor', 'MoveDistance', 'PieceNumber', 'ScoreDifference']
+
+                columns_to_average = list(set(columns_to_average) & set(df.columns))
+
+                avg = df_pl.group_by("GameRulesetName").agg([
+                    pl.col(column).mean().alias(f"avg_{column}") for column in columns_to_average
+                ])
+
+                df_pl = df_pl.join(avg, on="GameRulesetName")
+
+                for column in columns_to_average:
+                    df_pl = df_pl.with_columns(pl.col(f"avg_{column}").alias(column))
+
+                df_pl = df_pl.drop([f"avg_{column}" for column in columns_to_average])
+
+                # New data generation for PL.
+
+                def generate_unique_combinations(group_df):
+                    
+                    existing_combinations = set(
+                        tuple(pair)
+                        for pair in zip(group_df['p1_agent'].to_list(), group_df['p2_agent'].to_list())
+                    )
+
+                    unique_agents = set(df['p1_agent'].to_list() + df['p2_agent'].to_list())
+
+                    all_combinations = set(combinations(unique_agents, 2))
+
+                    new_combinations = all_combinations - existing_combinations
+
+                    combined_permutations = [(a, b) for comb in new_combinations for a, b in permutations(comb, 2)]
+
+                    original_group_size = group_df.height
+                    if len(combined_permutations) >= original_group_size:
+                        sampled_permutations = random.sample(combined_permutations, original_group_size)
+                    else:
+                        sampled_permutations = combined_permutations
+
+                    if sampled_permutations:
+                        p1_agents_new, p2_agents_new = zip(*sampled_permutations)
+                    else:
+                        p1_agents_new, p2_agents_new = [], []
+
+                    new_group_df = group_df.drop(['p1_agent', 'p2_agent']).with_columns([
+                        pl.Series("p1_agent", p1_agents_new),
+                        pl.Series("p2_agent", p2_agents_new)
+                    ])
+
+                    return new_group_df
+                
+                # columns = df_pl.columns
+
+                # df_pl = df_pl.group_by("GameRulesetName", maintain_order=True).map_groups(generate_unique_combinations)
+
+                # df_pl = df_pl[columns]
+
+                # Feature encoding for PL.
+
+                mean_values = df_pl.group_by('GameRulesetName').mean()
+
+                ruleset_dict = mean_values.to_dict(as_series=False)
+
+                X = df_pl.with_columns(
+                    df_pl['GameRulesetName'].map_elements(lambda x: ruleset_dict["utility_agent1"][ruleset_dict['GameRulesetName'].index(x)], return_dtype=pl.Float64)
+                )
+
+                X = X.drop(['fold', 'utility_agent1', 'num_wins_agent1','num_draws_agent1', 'num_losses_agent1', 'EnglishRules', 'LudRules', 'data_mode', 'agent1', 'mask', 'index', 'agent2']).to_pandas()
+                
+                # PL predict.
+                
+                preds = np.zeros(len(X))
+                for i in range(1):
+                    model = models[i]
+                    print(1)
+                    model.set_feature_names([f.replace('src_', '') for f in model.feature_names_])
+
+                    cat_feature_indices = model.get_cat_feature_indices()
+                    cat_feature_names = [model.feature_names_[i] for i in cat_feature_indices]
+                    cat_mapping = {f: "category" if f in cat_feature_names else float for f in model.feature_names_}
+                    X = X.astype(cat_mapping)[model.feature_names_]
+
+                    preds += model.predict(X) / len(models)
+
+                    gc.collect()
+
+                src_df = pl.concat([src_df, df_pl.with_columns(pl.Series('utility_agent1', preds), pl.lit("pl").alias("data_mode")).drop(['index', 'fold'])])
+
+                pl_folds += [fold] * len(df_pl)
+
+            src_df = src_df.with_columns(pl.Series("fold", np.concatenate([df["fold"].to_numpy(), df["fold"].to_numpy(), np.array(pl_folds)])))
+
+            print("Shape after pseudo labelilng", src_df.shape)
 
             # Filter by RMSE mask.
 
@@ -357,6 +447,26 @@ class Dataset:
     
     def drop_columns(self, df: pl.DataFrame) -> pl.DataFrame:
         """Drop the certain columns."""
+
+        # Leak check first.
+
+        if self.config.is_train:
+
+            df = df.to_pandas()
+
+            tmpd = df[["GameRulesetName", "fold"]].copy()
+            flag = True
+            for i in range(self.config.n_splits):
+                for j in range(self.config.n_splits):
+                    if i == j: continue
+                    intersection = set(tmpd[tmpd["fold"] == i]["GameRulesetName"].unique()) & set(tmpd[tmpd["fold"] == j]["GameRulesetName"].unique())
+                    if len(intersection) != 0:
+                        print(i, j)
+                        flag = False
+
+            if flag: print('No groups intersections detected.')
+
+            df = pl.from_pandas(df)
 
         columns_to_drop = ['PieceState', 'GraphStyle', 'MovesOperators', 'SowCCW', 'ScoreDifferenceMedian', 'AbsoluteDirections', 'PushEffectFrequency', 'LineWin', 'LeapDecisionToEmptyFrequency', 'AlquerqueBoardWithOneTriangle', 'TaflStyle', 'Capture', 'Even', 'RegularShape', 'SlideDecisionToFriendFrequency', 'SwapPiecesDecisionFrequency', 'AddDecision', 'LineLossFrequency', 'CheckmateFrequency', 'Multiplication', 'MoveAgain', 'TriangleTiling', 'SetSiteState', 'SwapPlayersDecision', 'RemoveDecision', 'LineOfSight', 'CaptureEnd', 'SquareTiling', 'ForwardsDirection', 'NoProgressEndFrequency', 'Draw', 'Odd', 'Parity', 'ConnectionLossFrequency', 'NoMovesWin', 'SurakartaStyle', 'Checkmate', 'TrackLoop', 'StepEffect', 'StepDecisionToFriend', 'Maximum', 'HopEffect', 'NineMensMorrisBoard', 'TriangleShape', 'FillWinFrequency', 'Style', 'FlipFrequency', 'VoteEffect', 'NoMoves', 'Meta', 'GroupEndFrequency', 'Hand', 'NoMovesEnd', 'CountPiecesMoverComparison', 'FromToDecision', 'StackType', 'IsEnemy', 'AlquerqueBoardWithFourTriangles', 'MancalaFourRows', 'Group', 'HopDecisionFriendToEnemyFrequency', 'NoOwnPiecesWinFrequency', 'CountPiecesComparison', 'VoteDecision', 'NoProgressDrawFrequency', 'RaceEnd', 'SetRotation', 'CrossBoard', 'SwapPlayersEffect', 'PieceRotation', 'ReplacementCapture', 'TerritoryWinFrequency', 'HopDecisionFriendToFriendFrequency', 'NoPieceMover', 'LineEnd', 'LeapDecision', 'PolygonShape', 'SemiRegularTiling', 'EliminatePiecesLossFrequency', 'NumDice', 'FromToDecisionFrequency', 'RemoveEffect', 'FillEndFrequency', 'CanMove', 'StarBoard', 'Track', 'PassEffect', 'ProposeDecisionFrequency', 'ConnectionEnd', 'Modulo', 'ChessComponent', 'NoProgressDraw', 'FromToDecisionEmpty', 'Scoring', 'LineLoss', 'PatternEnd', 'NoTargetPieceWinFrequency', 'NoOwnPiecesEnd', 'PatternEndFrequency', 'Efficiency', 'PenAndPaperStyle', 'ForgetValues', 'MancalaTwoRows', 'DiagonalDirection', 'HopDecision', 'PatternWinFrequency', 'StackState', 'Stack', 'StateType', 'ShowPieceState', 'AlquerqueBoardWithTwoTriangles', 'Math', 'TaflComponent', 'HopDecisionFriendToEmptyFrequency', 'InitialScore', 'PatternWin', 'SquarePyramidalShape', 'Directions', 'Pattern', 'SetMove', 'Division', 'PromotionEffect', 'ScoringLossFrequency', 'ShibumiStyle', 'ScoringWin', 'TrackOwned', 'ShowPieceValue', 'DiamondShape', 'GroupWinFrequency', 'LeapDecisionToEnemy', 'BackwardDirection', 'ScoringLoss', 'AddEffect', 'BackgammonStyle', 'ReachWin', 'Absolute', 'PieceValue', 'ScoringEnd', 'NoTargetPiece', 'HopDecisionFriendToEnemy', 'ScoringDraw', 'NoMovesLoss', 'ConnectionLoss', 'HopDecisionEnemyToEnemyFrequency', 'QueenComponent', 'PawnComponent', 'ShootDecision', 'Implementation', 'GroupEnd', 'NoMovesDrawFrequency', 'RememberValues', 'CircleTiling', 'ThreeMensMorrisBoard', 'FairyChessComponent', 'SetInternalCounter', 'BackwardLeftDirection', 'OppositeDirection', 'PromotionDecision', 'LeapEffect', 'Territory', 'Moves', 'FromToEffect', 'SlideEffect', 'SetCountFrequency', 'BishopComponent', 'CircleShape', 'ReachLoss', 'ProposeDecision', 'PloyComponent', 'XiangqiStyle', 'CheckmateWin', 'DiceD6', 'AggressiveActionsRatio', 'FromToDecisionFriend', 'ProgressCheck', 'ForwardDirection', 'LargePiece', 'HopCaptureMoreThanOne', 'DiceD4', 'LeftwardDirection', 'NoProgressEnd', 'InternalCounter', 'ByDieMove', 'FromToDecisionEnemy', 'CanNotMove', 'Minimum', 'Dice', 'Stochastic', 'HexTiling', 'SameDirection', 'PushEffect', 'ForwardLeftDirection', 'EliminatePiecesLoss', 'DirectionCapture', 'SowCapture', 'StepDecisionToEnemy', 'BackwardRightDirection', 'SlideDecision', 'InitialCost', 'LeapDecisionToEmpty', 'AlquerqueBoardWithEightTriangles', 'GroupWin', 'Tile', 'TerritoryEnd', 'DirectionCaptureFrequency', 'NoBoard', 'NoTargetPieceWin', 'ForwardRightDirection', 'ProposeEffectFrequency', 'TurnKo', 'NoOwnPiecesLossFrequency', 'RotationalDirection', 'SowRemove', 'HopDecisionEnemyToEnemy', 'RookComponent', 'TableStyle', 'TerritoryWin', 'MancalaSixRows', 'MaxDistance', 'NoOwnPiecesLoss', 'Threat', 'PositionalSuperko', 'CaptureSequence', 'NumOffDiagonalDirections', 'ProposeEffect', 'Roll', 'SlideDecisionToFriend', 'LineDraw', 'SetValue', 'GroupDraw', 'SumDice', 'ThreeMensMorrisBoardWithTwoTriangles', 'KingComponent', 'Repetition', 'SurroundCapture', 'Loop', 'NoOwnPiecesWin', 'BranchingFactorChangeNumTimesn', 'RotationDecision', 'LoopEndFrequency', 'InterveneCapture', 'HopDecisionFriendToEmpty', 'EliminatePiecesDrawFrequency', 'DiceD2', 'Edge', 'SetCount', 'RightwardDirection', 'LoopEnd', 'ShogiStyle', 'SwapPiecesDecision', 'FortyStonesWithFourGapsBoard', 'StarShape', 'Boardless', 'MancalaCircular', 'XiangqiComponent', 'ReachLossFrequency', 'Fill', 'SlideDecisionToEnemy', 'JanggiComponent', 'KintsBoard', 'ShogiComponent', 'SowBacktracking', 'Piece', 'InitialRandomPlacement', 'LoopWin', 'LoopWinFrequency', 'Flip', 'FillEnd', 'JanggiStyle', 'ShootDecisionFrequency', 'MancalaThreeRows', 'StrategoComponent', 'RotationDecisionFrequency', 'InterveneCaptureFrequency', 'EliminatePiecesDraw', 'AutoMove', 'PachisiBoard', 'GroupLoss', 'PathExtent', 'VisitedSites', 'Cooperation', 'SetRotationFrequency', 'FillWin', 'SpiralTiling', 'PathExtentEnd', 'SpiralShape', 'Team', 'ReachDrawFrequency', 'LeftwardsDirection', 'ReachDraw', 'PathExtentLoss', 'PathExtentWin', 'LoopLoss', 'RightwardsDirection']
 
@@ -554,31 +664,6 @@ class Solver:
 
             print("X-train and X-valid shapes", X_train.shape, X_valid.shape)
 
-            # # Feature encoding.
-
-            # features_to_encode = [
-            #     'GameRulesetName',
-            # ]
-
-            # print("Feature encoding")
-            # for feature in tqdm(features_to_encode):
-
-            #     # Original
-            #     m = {}
-            #     for u in X_train[feature].unique():
-            #         m[u] = Y_train[X_train[feature] == u].mean()
-            #     X_train[feature] = X_train[feature].map(m)
-            #     X_valid[feature] = X_valid[feature].map(m)
-
-            #     # TTA
-            #     m = {}
-            #     feature = feature.replace('src', 'tta')
-            #     for u in X_train[feature].unique():
-            #         m[u] = Y_train[X_train[feature] == u].mean()
-            #     X_valid[feature] = X_valid[feature].map(m)
-
-            # print("Shape after feature encoding", X_train.shape)
-
             # TF-IDF.
 
             if self.config.n_tf_ids_features != 0:
@@ -739,8 +824,6 @@ class Solver:
         if self.config.n_tf_ids_features != 0:
             X = self.generate_TF_IDF(X, mode='test', fold=0, n_tf_ids_features=self.config.n_tf_ids_features)
             print('Shape with TF-IDF features', X.shape)
-        else:
-            X = X.drop(['EnglishRules', 'LudRules'], axis=1)
 
         # Inference | Main.
 
