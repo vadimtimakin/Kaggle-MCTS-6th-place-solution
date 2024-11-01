@@ -143,10 +143,7 @@ class Dataset:
         self.rerun = rerun
         
         if self.config.is_train:
-            self.data_checkpoint = {
-                "dropcols": [],
-                "catcols": [],
-            }
+            self.data_checkpoint = {}
         else:
             with open(config.path_to_load_data_checkpoint, "rb") as f:
                 self.data_checkpoint = pickle.load(f)
@@ -157,7 +154,24 @@ class Dataset:
         # Initial data shape.
         
         print("Initial shape", df.shape)
-        
+
+        # Normalization.
+
+        # columns_to_average = ['Behaviour', 'StateRepetition', 'Duration', 'Complexity', 'BoardCoverage', 'GameOutcome', 'StateEvaluation', 'Clarity', 'Decisiveness', 'Drama', 'MoveEvaluation', 'StateEvaluationDifference', 'BoardSitesOccupied', 'BranchingFactor', 'DecisionFactor', 'MoveDistance', 'PieceNumber', 'ScoreDifference']
+
+        # average_df = df.group_by("GameRulesetName").agg([
+        #     pl.col(column).mean().alias(f"avg_{column}") for column in columns_to_average
+        # ])
+
+        # df_with_averages = df.join(average_df, on="GameRulesetName")
+
+        # for column in columns_to_average:
+        #     df_with_averages = df_with_averages.with_columns(
+        #         pl.col(f"avg_{column}").alias(column)
+        #     )
+
+        # df = df_with_averages.drop([f"avg_{column}" for column in columns_to_average])
+
         # Mirror the dataset.
         
         if self.config.is_train:
@@ -188,7 +202,7 @@ class Dataset:
         if self.config.is_train:
             constant_columns = np.array(df.columns)[df.select(pl.all().n_unique() == 1).to_numpy().ravel()]
             drop_columns = list(constant_columns) + ['Id']
-            self.data_checkpoint["dropcols"] += drop_columns
+            self.data_checkpoint["dropcols"] = drop_columns
         else:
             drop_columns = self.data_checkpoint["dropcols"]
             
@@ -256,6 +270,35 @@ class Dataset:
             for c2 in cols:
                 df[f"{c1}_{c2}"] = df[f"p1_{c1}"].astype(str) + df[f"p1_{c2}"].astype(str)
 
+        # Apply the OpenFE features.
+
+        df = df.rename(columns = lambda x:re.sub('[^A-Za-z0-9_]+', '', x)).reset_index()
+
+        with open(self.config.path_to_load_features, 'rb') as file:
+            ofe_features = pickle.load(file)
+
+            operators = ["abs", "log", "sqrt", "square", "sigmoid", "round", "residual", "min", "max", "+", "-", "*", "/"]
+            
+            ofe_features_basic = ofe_features[:self.config.n_openfe_features[0]]
+            ofe_features_num = [feature for feature in ofe_features[self.config.n_openfe_features[0]:] if feature.name in operators]
+            basic_num_count = len([f for f in ofe_features_basic if f.name in operators]) 
+            ofe_features_num = ofe_features_num[:max(self.config.n_openfe_features[1], basic_num_count) - basic_num_count]
+
+            ofe_features = ofe_features_basic + ofe_features_num
+
+        if self.config.n_openfe_features != (0, 0):
+            valid_features = sorted([112, 468, 386, 6, 333, 357, 353, 194, 59, 174, 191, 182, 436, 261, 328, 189, 8, 275, 279, 223, 154, 319, 221, 218, 380, 402, 276, 1, 253, 362, 294, 108, 484, 11, 200, 356, 491, 2, 248, 176, 449, 335, 310, 479, 322, 446, 198, 116, 206, 214])
+            df, _ = transform(df, df[:10], ofe_features, valid_features, n_jobs=1)
+            del ofe_features
+
+        df = df.drop([column for column in df.columns if 'index' in column], axis=1)
+
+        df = df.fillna(-100)
+
+        print('Shape with OpenFE features', df.shape)
+
+        # Convert back to polars.
+
         df = pl.from_pandas(df)
 
         print("Shape after feature generation", df.shape)
@@ -315,15 +358,19 @@ class Dataset:
     def drop_columns(self, df: pl.DataFrame) -> pl.DataFrame:
         """Drop the certain columns."""
 
-        columns_to_drop = []
+        columns_to_drop = ['PieceState', 'GraphStyle', 'MovesOperators', 'SowCCW', 'ScoreDifferenceMedian', 'AbsoluteDirections', 'PushEffectFrequency', 'LineWin', 'LeapDecisionToEmptyFrequency', 'AlquerqueBoardWithOneTriangle', 'TaflStyle', 'Capture', 'Even', 'RegularShape', 'SlideDecisionToFriendFrequency', 'SwapPiecesDecisionFrequency', 'AddDecision', 'LineLossFrequency', 'CheckmateFrequency', 'Multiplication', 'MoveAgain', 'TriangleTiling', 'SetSiteState', 'SwapPlayersDecision', 'RemoveDecision', 'LineOfSight', 'CaptureEnd', 'SquareTiling', 'ForwardsDirection', 'NoProgressEndFrequency', 'Draw', 'Odd', 'Parity', 'ConnectionLossFrequency', 'NoMovesWin', 'SurakartaStyle', 'Checkmate', 'TrackLoop', 'StepEffect', 'StepDecisionToFriend', 'Maximum', 'HopEffect', 'NineMensMorrisBoard', 'TriangleShape', 'FillWinFrequency', 'Style', 'FlipFrequency', 'VoteEffect', 'NoMoves', 'Meta', 'GroupEndFrequency', 'Hand', 'NoMovesEnd', 'CountPiecesMoverComparison', 'FromToDecision', 'StackType', 'IsEnemy', 'AlquerqueBoardWithFourTriangles', 'MancalaFourRows', 'Group', 'HopDecisionFriendToEnemyFrequency', 'NoOwnPiecesWinFrequency', 'CountPiecesComparison', 'VoteDecision', 'NoProgressDrawFrequency', 'RaceEnd', 'SetRotation', 'CrossBoard', 'SwapPlayersEffect', 'PieceRotation', 'ReplacementCapture', 'TerritoryWinFrequency', 'HopDecisionFriendToFriendFrequency', 'NoPieceMover', 'LineEnd', 'LeapDecision', 'PolygonShape', 'SemiRegularTiling', 'EliminatePiecesLossFrequency', 'NumDice', 'FromToDecisionFrequency', 'RemoveEffect', 'FillEndFrequency', 'CanMove', 'StarBoard', 'Track', 'PassEffect', 'ProposeDecisionFrequency', 'ConnectionEnd', 'Modulo', 'ChessComponent', 'NoProgressDraw', 'FromToDecisionEmpty', 'Scoring', 'LineLoss', 'PatternEnd', 'NoTargetPieceWinFrequency', 'NoOwnPiecesEnd', 'PatternEndFrequency', 'Efficiency', 'PenAndPaperStyle', 'ForgetValues', 'MancalaTwoRows', 'DiagonalDirection', 'HopDecision', 'PatternWinFrequency', 'StackState', 'Stack', 'StateType', 'ShowPieceState', 'AlquerqueBoardWithTwoTriangles', 'Math', 'TaflComponent', 'HopDecisionFriendToEmptyFrequency', 'InitialScore', 'PatternWin', 'SquarePyramidalShape', 'Directions', 'Pattern', 'SetMove', 'Division', 'PromotionEffect', 'ScoringLossFrequency', 'ShibumiStyle', 'ScoringWin', 'TrackOwned', 'ShowPieceValue', 'DiamondShape', 'GroupWinFrequency', 'LeapDecisionToEnemy', 'BackwardDirection', 'ScoringLoss', 'AddEffect', 'BackgammonStyle', 'ReachWin', 'Absolute', 'PieceValue', 'ScoringEnd', 'NoTargetPiece', 'HopDecisionFriendToEnemy', 'ScoringDraw', 'NoMovesLoss', 'ConnectionLoss', 'HopDecisionEnemyToEnemyFrequency', 'QueenComponent', 'PawnComponent', 'ShootDecision', 'Implementation', 'GroupEnd', 'NoMovesDrawFrequency', 'RememberValues', 'CircleTiling', 'ThreeMensMorrisBoard', 'FairyChessComponent', 'SetInternalCounter', 'BackwardLeftDirection', 'OppositeDirection', 'PromotionDecision', 'LeapEffect', 'Territory', 'Moves', 'FromToEffect', 'SlideEffect', 'SetCountFrequency', 'BishopComponent', 'CircleShape', 'ReachLoss', 'ProposeDecision', 'PloyComponent', 'XiangqiStyle', 'CheckmateWin', 'DiceD6', 'AggressiveActionsRatio', 'FromToDecisionFriend', 'ProgressCheck', 'ForwardDirection', 'LargePiece', 'HopCaptureMoreThanOne', 'DiceD4', 'LeftwardDirection', 'NoProgressEnd', 'InternalCounter', 'ByDieMove', 'FromToDecisionEnemy', 'CanNotMove', 'Minimum', 'Dice', 'Stochastic', 'HexTiling', 'SameDirection', 'PushEffect', 'ForwardLeftDirection', 'EliminatePiecesLoss', 'DirectionCapture', 'SowCapture', 'StepDecisionToEnemy', 'BackwardRightDirection', 'SlideDecision', 'InitialCost', 'LeapDecisionToEmpty', 'AlquerqueBoardWithEightTriangles', 'GroupWin', 'Tile', 'TerritoryEnd', 'DirectionCaptureFrequency', 'NoBoard', 'NoTargetPieceWin', 'ForwardRightDirection', 'ProposeEffectFrequency', 'TurnKo', 'NoOwnPiecesLossFrequency', 'RotationalDirection', 'SowRemove', 'HopDecisionEnemyToEnemy', 'RookComponent', 'TableStyle', 'TerritoryWin', 'MancalaSixRows', 'MaxDistance', 'NoOwnPiecesLoss', 'Threat', 'PositionalSuperko', 'CaptureSequence', 'NumOffDiagonalDirections', 'ProposeEffect', 'Roll', 'SlideDecisionToFriend', 'LineDraw', 'SetValue', 'GroupDraw', 'SumDice', 'ThreeMensMorrisBoardWithTwoTriangles', 'KingComponent', 'Repetition', 'SurroundCapture', 'Loop', 'NoOwnPiecesWin', 'BranchingFactorChangeNumTimesn', 'RotationDecision', 'LoopEndFrequency', 'InterveneCapture', 'HopDecisionFriendToEmpty', 'EliminatePiecesDrawFrequency', 'DiceD2', 'Edge', 'SetCount', 'RightwardDirection', 'LoopEnd', 'ShogiStyle', 'SwapPiecesDecision', 'FortyStonesWithFourGapsBoard', 'StarShape', 'Boardless', 'MancalaCircular', 'XiangqiComponent', 'ReachLossFrequency', 'Fill', 'SlideDecisionToEnemy', 'JanggiComponent', 'KintsBoard', 'ShogiComponent', 'SowBacktracking', 'Piece', 'InitialRandomPlacement', 'LoopWin', 'LoopWinFrequency', 'Flip', 'FillEnd', 'JanggiStyle', 'ShootDecisionFrequency', 'MancalaThreeRows', 'StrategoComponent', 'RotationDecisionFrequency', 'InterveneCaptureFrequency', 'EliminatePiecesDraw', 'AutoMove', 'PachisiBoard', 'GroupLoss', 'PathExtent', 'VisitedSites', 'Cooperation', 'SetRotationFrequency', 'FillWin', 'SpiralTiling', 'PathExtentEnd', 'SpiralShape', 'Team', 'ReachDrawFrequency', 'LeftwardsDirection', 'ReachDraw', 'PathExtentLoss', 'PathExtentWin', 'LoopLoss', 'RightwardsDirection']
 
         if self.config.is_train:
             columns_to_drop += [
                 'num_wins_agent1',
                 'num_draws_agent1',
                 'num_losses_agent1',
+                'GameRulesetName',
             ]
-        
+
+        if self.config.n_tf_ids_features == 0:
+            columns_to_drop += ['EnglishRules', 'LudRules']
+
         df = df.drop(columns_to_drop, strict=False)
         
         print('Shape after dropping specific columns:', df.shape)
@@ -337,12 +384,20 @@ class Dataset:
         """Adjust data types."""
         
         df = df.to_pandas()
+
+        # Categorical mapping.
         
-        if self.config.is_train:
-            cat_mapping = {feature: pd.CategoricalDtype(categories=list(set(df[feature]))) for feature in df.columns[df.dtypes == object]}
-            catcols = list(cat_mapping.keys())
-            catcols = [column for column in catcols if 'tta' not in column]
-            self.data_checkpoint["catcols"] += catcols
+        cat_mapping, catcols = {}, []
+        for feature in df.columns:
+            if feature in ["fold", "data_mode", "utility_agent1"]: continue
+            if df[feature].dtype == object:
+                cat_mapping[feature] = "category"
+                catcols.append(feature)
+            else:
+                cat_mapping[feature] = float
+
+        df = df.astype(cat_mapping)
+        self.data_checkpoint["catcols"] = catcols
 
         if self.config.task == "classification":
             df["utility_agent1"] = df["utility_agent1"].astype(str)
@@ -432,8 +487,6 @@ class Solver:
         
         if model_name not in self.models:
             self.models[model_name] = {
-                "features": None,
-                "oof_score": None,
                 "models": [],
             }
             
@@ -493,45 +546,6 @@ class Solver:
                 X_train = self.generate_TF_IDF(X_train, mode='train', fold=fold, n_tf_ids_features=self.config.n_tf_ids_features)
                 X_valid = self.generate_TF_IDF(X_valid, mode='test', fold=fold, n_tf_ids_features=self.config.n_tf_ids_features)
                 print('Shape with TF-IDF features', X_train.shape, X_valid.shape)
-            else:
-                X_train = X_train.drop(['EnglishRules', 'LudRules'], axis=1)
-                X_valid = X_valid.drop(['EnglishRules', 'LudRules'], axis=1)
-            
-            # Apply the OpenFE features.
-
-            with open(self.config.path_to_load_features, 'rb') as file:
-                ofe_features = pickle.load(file)
-
-                operators = ["abs", "log", "sqrt", "square", "sigmoid", "round", "residual", "min", "max", "+", "-", "*", "/"]
-                
-                ofe_features_basic = ofe_features[:self.config.n_openfe_features[0]]
-                ofe_features_num = [feature for feature in ofe_features[self.config.n_openfe_features[0]:] if feature.name in operators]
-                basic_num_count = len([f for f in ofe_features_basic if f.name in operators]) 
-                ofe_features_num = ofe_features_num[:max(self.config.n_openfe_features[1], basic_num_count) - basic_num_count]
-
-                ofe_features = ofe_features_basic + ofe_features_num
-
-            if self.config.n_openfe_features != (0, 0):
-                valid_features = sorted([112, 468, 386, 6, 333, 357, 353, 194, 59, 174, 191, 182, 436, 261, 328, 189, 8, 275, 279, 223, 154, 319, 221, 218, 380, 402, 276, 1, 253, 362, 294, 108, 484, 11, 200, 356, 491, 2, 248, 176, 449, 335, 310, 479, 322, 446, 198, 116, 206, 214])
-                X_train, _ = transform(X_train, X_train[:10], ofe_features, valid_features, n_jobs=1)
-                X_valid, _ = transform(X_valid, X_valid[:10], ofe_features, valid_features, n_jobs=1)
-                
-                del ofe_features
-
-            columns_to_drop = ['PieceState', 'GraphStyle', 'MovesOperators', 'SowCCW', 'ScoreDifferenceMedian', 'AbsoluteDirections', 'PushEffectFrequency', 'LineWin', 'LeapDecisionToEmptyFrequency', 'AlquerqueBoardWithOneTriangle', 'TaflStyle', 'Capture', 'Even', 'RegularShape', 'SlideDecisionToFriendFrequency', 'SwapPiecesDecisionFrequency', 'AddDecision', 'LineLossFrequency', 'CheckmateFrequency', 'Multiplication', 'MoveAgain', 'TriangleTiling', 'SetSiteState', 'SwapPlayersDecision', 'RemoveDecision', 'LineOfSight', 'CaptureEnd', 'SquareTiling', 'ForwardsDirection', 'NoProgressEndFrequency', 'Draw', 'Odd', 'Parity', 'ConnectionLossFrequency', 'NoMovesWin', 'SurakartaStyle', 'Checkmate', 'TrackLoop', 'StepEffect', 'StepDecisionToFriend', 'Maximum', 'HopEffect', 'NineMensMorrisBoard', 'TriangleShape', 'FillWinFrequency', 'Style', 'FlipFrequency', 'VoteEffect', 'NoMoves', 'Meta', 'GroupEndFrequency', 'Hand', 'NoMovesEnd', 'CountPiecesMoverComparison', 'FromToDecision', 'StackType', 'IsEnemy', 'AlquerqueBoardWithFourTriangles', 'MancalaFourRows', 'Group', 'HopDecisionFriendToEnemyFrequency', 'NoOwnPiecesWinFrequency', 'CountPiecesComparison', 'VoteDecision', 'NoProgressDrawFrequency', 'RaceEnd', 'SetRotation', 'CrossBoard', 'SwapPlayersEffect', 'PieceRotation', 'ReplacementCapture', 'TerritoryWinFrequency', 'HopDecisionFriendToFriendFrequency', 'NoPieceMover', 'LineEnd', 'LeapDecision', 'PolygonShape', 'SemiRegularTiling', 'EliminatePiecesLossFrequency', 'NumDice', 'FromToDecisionFrequency', 'RemoveEffect', 'FillEndFrequency', 'CanMove', 'StarBoard', 'Track', 'PassEffect', 'ProposeDecisionFrequency', 'ConnectionEnd', 'Modulo', 'ChessComponent', 'NoProgressDraw', 'FromToDecisionEmpty', 'Scoring', 'LineLoss', 'PatternEnd', 'NoTargetPieceWinFrequency', 'NoOwnPiecesEnd', 'PatternEndFrequency', 'Efficiency', 'PenAndPaperStyle', 'ForgetValues', 'MancalaTwoRows', 'DiagonalDirection', 'HopDecision', 'PatternWinFrequency', 'StackState', 'Stack', 'StateType', 'ShowPieceState', 'AlquerqueBoardWithTwoTriangles', 'Math', 'TaflComponent', 'HopDecisionFriendToEmptyFrequency', 'InitialScore', 'PatternWin', 'SquarePyramidalShape', 'Directions', 'Pattern', 'SetMove', 'Division', 'PromotionEffect', 'ScoringLossFrequency', 'ShibumiStyle', 'ScoringWin', 'TrackOwned', 'ShowPieceValue', 'DiamondShape', 'GroupWinFrequency', 'LeapDecisionToEnemy', 'BackwardDirection', 'ScoringLoss', 'AddEffect', 'BackgammonStyle', 'ReachWin', 'Absolute', 'PieceValue', 'ScoringEnd', 'NoTargetPiece', 'HopDecisionFriendToEnemy', 'ScoringDraw', 'NoMovesLoss', 'ConnectionLoss', 'HopDecisionEnemyToEnemyFrequency', 'QueenComponent', 'PawnComponent', 'ShootDecision', 'Implementation', 'GroupEnd', 'NoMovesDrawFrequency', 'RememberValues', 'CircleTiling', 'ThreeMensMorrisBoard', 'FairyChessComponent', 'SetInternalCounter', 'BackwardLeftDirection', 'OppositeDirection', 'PromotionDecision', 'LeapEffect', 'Territory', 'Moves', 'FromToEffect', 'SlideEffect', 'SetCountFrequency', 'BishopComponent', 'CircleShape', 'ReachLoss', 'ProposeDecision', 'PloyComponent', 'XiangqiStyle', 'CheckmateWin', 'DiceD6', 'AggressiveActionsRatio', 'FromToDecisionFriend', 'ProgressCheck', 'ForwardDirection', 'LargePiece', 'HopCaptureMoreThanOne', 'DiceD4', 'LeftwardDirection', 'NoProgressEnd', 'InternalCounter', 'ByDieMove', 'FromToDecisionEnemy', 'CanNotMove', 'Minimum', 'Dice', 'Stochastic', 'HexTiling', 'SameDirection', 'PushEffect', 'ForwardLeftDirection', 'EliminatePiecesLoss', 'DirectionCapture', 'SowCapture', 'StepDecisionToEnemy', 'BackwardRightDirection', 'SlideDecision', 'InitialCost', 'LeapDecisionToEmpty', 'AlquerqueBoardWithEightTriangles', 'GroupWin', 'Tile', 'TerritoryEnd', 'DirectionCaptureFrequency', 'NoBoard', 'NoTargetPieceWin', 'ForwardRightDirection', 'ProposeEffectFrequency', 'TurnKo', 'NoOwnPiecesLossFrequency', 'RotationalDirection', 'SowRemove', 'HopDecisionEnemyToEnemy', 'RookComponent', 'TableStyle', 'TerritoryWin', 'MancalaSixRows', 'MaxDistance', 'NoOwnPiecesLoss', 'Threat', 'PositionalSuperko', 'CaptureSequence', 'NumOffDiagonalDirections', 'ProposeEffect', 'Roll', 'SlideDecisionToFriend', 'LineDraw', 'SetValue', 'GroupDraw', 'SumDice', 'ThreeMensMorrisBoardWithTwoTriangles', 'KingComponent', 'Repetition', 'SurroundCapture', 'Loop', 'NoOwnPiecesWin', 'BranchingFactorChangeNumTimesn', 'RotationDecision', 'LoopEndFrequency', 'InterveneCapture', 'HopDecisionFriendToEmpty', 'EliminatePiecesDrawFrequency', 'DiceD2', 'Edge', 'SetCount', 'RightwardDirection', 'LoopEnd', 'ShogiStyle', 'SwapPiecesDecision', 'FortyStonesWithFourGapsBoard', 'StarShape', 'Boardless', 'MancalaCircular', 'XiangqiComponent', 'ReachLossFrequency', 'Fill', 'SlideDecisionToEnemy', 'JanggiComponent', 'KintsBoard', 'ShogiComponent', 'SowBacktracking', 'Piece', 'InitialRandomPlacement', 'LoopWin', 'LoopWinFrequency', 'Flip', 'FillEnd', 'JanggiStyle', 'ShootDecisionFrequency', 'MancalaThreeRows', 'StrategoComponent', 'RotationDecisionFrequency', 'InterveneCaptureFrequency', 'EliminatePiecesDraw', 'AutoMove', 'PachisiBoard', 'GroupLoss', 'PathExtent', 'VisitedSites', 'Cooperation', 'SetRotationFrequency', 'FillWin', 'SpiralTiling', 'PathExtentEnd', 'SpiralShape', 'Team', 'ReachDrawFrequency', 'LeftwardsDirection', 'ReachDraw', 'PathExtentLoss', 'PathExtentWin', 'LoopLoss', 'RightwardsDirection']
-
-            X_train = X_train.drop([column for column in X_train.columns if 'index' in column] + columns_to_drop, axis=1)
-            X_valid = X_valid.drop([column for column in X_valid.columns if 'index' in column] + columns_to_drop, axis=1)
-
-            X_train = X_train.fillna(-100)
-            X_valid = X_valid.fillna(-100)
-
-            print('Shape with OpenFE features', X_train.shape, X_valid.shape)
-
-            # Pseudo labeling.
-
-            X_train = X_train.drop(["GameRulesetName"], axis=1)
-            X_valid = X_valid.drop(["GameRulesetName"], axis=1)
 
             # Separate original and mirrored data.
 
@@ -544,20 +558,6 @@ class Solver:
             X_valid_src = X_valid_src.drop(["data_mode"], axis=1)
 
             print('Original features shape', X_train.shape, X_valid_src.shape)
-
-            # Categorical mapping.
-
-            cat_mapping, catcols = {}, []
-            for feature in X_train.columns:
-                if X_train[feature].dtype == object:
-                    cat_mapping[feature] = "category"
-                    catcols.append(feature)
-                else:
-                    cat_mapping[feature] = float
-    
-            X_train = X_train.astype(cat_mapping)
-            X_valid = X_valid.astype(cat_mapping)
-            X_valid_src = X_valid_src.astype(cat_mapping)
             
             # Create and fit the model.
             
@@ -702,49 +702,6 @@ class Solver:
         else:
             X = X.drop(['EnglishRules', 'LudRules'], axis=1)
 
-        # TTA.
-        
-        X = X.rename(columns = lambda x:re.sub('[^A-Za-z0-9_]+', '', x)).reset_index()
-
-        # Apply OpenFE features.
-
-        with open(self.config.path_to_load_features, 'rb') as file:
-            ofe_features = pickle.load(file)
-
-            operators = ["abs", "log", "sqrt", "square", "sigmoid", "round", "residual", "min", "max", "+", "-", "*", "/"]
-
-            ofe_features_basic = ofe_features[:self.config.n_openfe_features[0]]
-            ofe_features_num = [feature for feature in ofe_features[self.config.n_openfe_features[0]:] if feature.name in operators]
-            basic_num_count = len([f for f in ofe_features_basic if f.name in operators]) 
-            ofe_features_num = ofe_features_num[:max(self.config.n_openfe_features[1], basic_num_count) - basic_num_count]
-
-            ofe_features = ofe_features_basic + ofe_features_num
-
-        if self.config.n_openfe_features != (0, 0):
-            valid_features = sorted([112, 468, 386, 6, 333, 357, 353, 194, 59, 174, 191, 182, 436, 261, 328, 189, 8, 275, 279, 223, 154, 319, 221, 218, 380, 402, 276, 1, 253, 362, 294, 108, 484, 11, 200, 356, 491, 2, 248, 176, 449, 335, 310, 479, 322, 446, 198, 116, 206, 214])
-            _, X = transform(X[:1], X, ofe_features, valid_features, n_jobs=1)
-
-            del ofe_features
-
-        columns_to_drop = ['PieceState', 'GraphStyle', 'MovesOperators', 'SowCCW', 'ScoreDifferenceMedian', 'AbsoluteDirections', 'PushEffectFrequency', 'LineWin', 'LeapDecisionToEmptyFrequency', 'AlquerqueBoardWithOneTriangle', 'TaflStyle', 'Capture', 'Even', 'RegularShape', 'SlideDecisionToFriendFrequency', 'SwapPiecesDecisionFrequency', 'AddDecision', 'LineLossFrequency', 'CheckmateFrequency', 'Multiplication', 'MoveAgain', 'TriangleTiling', 'SetSiteState', 'SwapPlayersDecision', 'RemoveDecision', 'LineOfSight', 'CaptureEnd', 'SquareTiling', 'ForwardsDirection', 'NoProgressEndFrequency', 'Draw', 'Odd', 'Parity', 'ConnectionLossFrequency', 'NoMovesWin', 'SurakartaStyle', 'Checkmate', 'TrackLoop', 'StepEffect', 'StepDecisionToFriend', 'Maximum', 'HopEffect', 'NineMensMorrisBoard', 'TriangleShape', 'FillWinFrequency', 'Style', 'FlipFrequency', 'VoteEffect', 'NoMoves', 'Meta', 'GroupEndFrequency', 'Hand', 'NoMovesEnd', 'CountPiecesMoverComparison', 'FromToDecision', 'StackType', 'IsEnemy', 'AlquerqueBoardWithFourTriangles', 'MancalaFourRows', 'Group', 'HopDecisionFriendToEnemyFrequency', 'NoOwnPiecesWinFrequency', 'CountPiecesComparison', 'VoteDecision', 'NoProgressDrawFrequency', 'RaceEnd', 'SetRotation', 'CrossBoard', 'SwapPlayersEffect', 'PieceRotation', 'ReplacementCapture', 'TerritoryWinFrequency', 'HopDecisionFriendToFriendFrequency', 'NoPieceMover', 'LineEnd', 'LeapDecision', 'PolygonShape', 'SemiRegularTiling', 'EliminatePiecesLossFrequency', 'NumDice', 'FromToDecisionFrequency', 'RemoveEffect', 'FillEndFrequency', 'CanMove', 'StarBoard', 'Track', 'PassEffect', 'ProposeDecisionFrequency', 'ConnectionEnd', 'Modulo', 'ChessComponent', 'NoProgressDraw', 'FromToDecisionEmpty', 'Scoring', 'LineLoss', 'PatternEnd', 'NoTargetPieceWinFrequency', 'NoOwnPiecesEnd', 'PatternEndFrequency', 'Efficiency', 'PenAndPaperStyle', 'ForgetValues', 'MancalaTwoRows', 'DiagonalDirection', 'HopDecision', 'PatternWinFrequency', 'StackState', 'Stack', 'StateType', 'ShowPieceState', 'AlquerqueBoardWithTwoTriangles', 'Math', 'TaflComponent', 'HopDecisionFriendToEmptyFrequency', 'InitialScore', 'PatternWin', 'SquarePyramidalShape', 'Directions', 'Pattern', 'SetMove', 'Division', 'PromotionEffect', 'ScoringLossFrequency', 'ShibumiStyle', 'ScoringWin', 'TrackOwned', 'ShowPieceValue', 'DiamondShape', 'GroupWinFrequency', 'LeapDecisionToEnemy', 'BackwardDirection', 'ScoringLoss', 'AddEffect', 'BackgammonStyle', 'ReachWin', 'Absolute', 'PieceValue', 'ScoringEnd', 'NoTargetPiece', 'HopDecisionFriendToEnemy', 'ScoringDraw', 'NoMovesLoss', 'ConnectionLoss', 'HopDecisionEnemyToEnemyFrequency', 'QueenComponent', 'PawnComponent', 'ShootDecision', 'Implementation', 'GroupEnd', 'NoMovesDrawFrequency', 'RememberValues', 'CircleTiling', 'ThreeMensMorrisBoard', 'FairyChessComponent', 'SetInternalCounter', 'BackwardLeftDirection', 'OppositeDirection', 'PromotionDecision', 'LeapEffect', 'Territory', 'Moves', 'FromToEffect', 'SlideEffect', 'SetCountFrequency', 'BishopComponent', 'CircleShape', 'ReachLoss', 'ProposeDecision', 'PloyComponent', 'XiangqiStyle', 'CheckmateWin', 'DiceD6', 'AggressiveActionsRatio', 'FromToDecisionFriend', 'ProgressCheck', 'ForwardDirection', 'LargePiece', 'HopCaptureMoreThanOne', 'DiceD4', 'LeftwardDirection', 'NoProgressEnd', 'InternalCounter', 'ByDieMove', 'FromToDecisionEnemy', 'CanNotMove', 'Minimum', 'Dice', 'Stochastic', 'HexTiling', 'SameDirection', 'PushEffect', 'ForwardLeftDirection', 'EliminatePiecesLoss', 'DirectionCapture', 'SowCapture', 'StepDecisionToEnemy', 'BackwardRightDirection', 'SlideDecision', 'InitialCost', 'LeapDecisionToEmpty', 'AlquerqueBoardWithEightTriangles', 'GroupWin', 'Tile', 'TerritoryEnd', 'DirectionCaptureFrequency', 'NoBoard', 'NoTargetPieceWin', 'ForwardRightDirection', 'ProposeEffectFrequency', 'TurnKo', 'NoOwnPiecesLossFrequency', 'RotationalDirection', 'SowRemove', 'HopDecisionEnemyToEnemy', 'RookComponent', 'TableStyle', 'TerritoryWin', 'MancalaSixRows', 'MaxDistance', 'NoOwnPiecesLoss', 'Threat', 'PositionalSuperko', 'CaptureSequence', 'NumOffDiagonalDirections', 'ProposeEffect', 'Roll', 'SlideDecisionToFriend', 'LineDraw', 'SetValue', 'GroupDraw', 'SumDice', 'ThreeMensMorrisBoardWithTwoTriangles', 'KingComponent', 'Repetition', 'SurroundCapture', 'Loop', 'NoOwnPiecesWin', 'BranchingFactorChangeNumTimesn', 'RotationDecision', 'LoopEndFrequency', 'InterveneCapture', 'HopDecisionFriendToEmpty', 'EliminatePiecesDrawFrequency', 'DiceD2', 'Edge', 'SetCount', 'RightwardDirection', 'LoopEnd', 'ShogiStyle', 'SwapPiecesDecision', 'FortyStonesWithFourGapsBoard', 'StarShape', 'Boardless', 'MancalaCircular', 'XiangqiComponent', 'ReachLossFrequency', 'Fill', 'SlideDecisionToEnemy', 'JanggiComponent', 'KintsBoard', 'ShogiComponent', 'SowBacktracking', 'Piece', 'InitialRandomPlacement', 'LoopWin', 'LoopWinFrequency', 'Flip', 'FillEnd', 'JanggiStyle', 'ShootDecisionFrequency', 'MancalaThreeRows', 'StrategoComponent', 'RotationDecisionFrequency', 'InterveneCaptureFrequency', 'EliminatePiecesDraw', 'AutoMove', 'PachisiBoard', 'GroupLoss', 'PathExtent', 'VisitedSites', 'Cooperation', 'SetRotationFrequency', 'FillWin', 'SpiralTiling', 'PathExtentEnd', 'SpiralShape', 'Team', 'ReachDrawFrequency', 'LeftwardsDirection', 'ReachDraw', 'PathExtentLoss', 'PathExtentWin', 'LoopLoss', 'RightwardsDirection']
-            
-        X = X.drop([column for column in X.columns if 'index' in column] + columns_to_drop, axis=1)
-        
-        X = X.fillna(-100)
-
-        X = X.drop(["GameRulesetName"], axis=1)
-
-        # Categorical mapping.
-
-        cat_mapping = {}
-        for feature in X.columns:
-            if X[feature].dtype == object:
-                cat_mapping[feature] = "category"
-            else:
-                cat_mapping[feature] = float
-
-        X = X.astype(cat_mapping)
-
         # Inference | Main.
 
         prediction = np.zeros(len(X))
@@ -800,8 +757,6 @@ if not IS_TRAIN:
         
         df, data_checkpoint = dataset.get_dataset(test)
         preds = solver.predict(df, df_train, data_checkpoint)
-
-        # preds[df["GameTreeComplexity"] == 0] = 2 * df[df["GameTreeComplexity"] == 0]["AdvantageP1"] - 1
 
         return sample_sub.with_columns(pl.Series('utility_agent1', preds))
     
