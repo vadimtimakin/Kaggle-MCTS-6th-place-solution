@@ -10,6 +10,7 @@ import pickle
 import numpy as np
 import polars as pl
 import pandas as pd
+from tqdm import tqdm
 
 import lightgbm as lgb
 from catboost import CatBoostRegressor, CatBoostClassifier
@@ -293,9 +294,6 @@ class Dataset:
         
         if self.config.is_train:
 
-            with open(self.config.path_to_load_solver_checkpoint["pl"], 'rb') as file:
-                models = pickle.load(file)["catboost"]["models"][:1]
-
             # Build the validation based on the original data and then assign the same folds to the mirror data to avoid the leak.
 
             src_df = df.clone()
@@ -316,6 +314,7 @@ class Dataset:
             pl_folds = []
 
             for fold, (_, index) in enumerate(split):
+                print("Generating features for fold", fold)
 
                 # Set fold index.
 
@@ -356,7 +355,7 @@ class Dataset:
                         for pair in zip(group_df['p1_agent'].to_list(), group_df['p2_agent'].to_list())
                     )
 
-                    unique_agents = set(df['p1_agent'].to_list() + df['p2_agent'].to_list())
+                    unique_agents = set(group_df['p1_agent'].to_list() + group_df['p2_agent'].to_list())
 
                     all_combinations = set(combinations(unique_agents, 2))
 
@@ -382,11 +381,11 @@ class Dataset:
 
                     return new_group_df
                 
-                # columns = df_pl.columns
+                columns = df_pl.columns
 
-                # df_pl = df_pl.group_by("GameRulesetName", maintain_order=True).map_groups(generate_unique_combinations)
+                df_pl = df_pl.group_by("GameRulesetName", maintain_order=True).map_groups(generate_unique_combinations)
 
-                # df_pl = df_pl[columns]
+                df_pl = df_pl[columns]
 
                 # Feature encoding for PL.
 
@@ -403,9 +402,10 @@ class Dataset:
                 # PL predict.
                 
                 preds = np.zeros(len(X))
-                for i in range(1):
-                    model = models[i]
-                    print(1)
+                for idx in range(self.config.n_splits):
+                    with open(self.config.path_to_load_solver_checkpoint["pl"], 'rb') as file:
+                        model = pickle.load(file)["catboost"]["models"][idx]
+
                     model.set_feature_names([f.replace('src_', '') for f in model.feature_names_])
 
                     cat_feature_indices = model.get_cat_feature_indices()
@@ -413,15 +413,20 @@ class Dataset:
                     cat_mapping = {f: "category" if f in cat_feature_names else float for f in model.feature_names_}
                     X = X.astype(cat_mapping)[model.feature_names_]
 
-                    preds += model.predict(X) / len(models)
-
+                    preds += model.predict(X) / self.config.n_splits
+                    
+                    del model
                     gc.collect()
 
                 src_df = pl.concat([src_df, df_pl.with_columns(pl.Series('utility_agent1', preds), pl.lit("pl").alias("data_mode")).drop(['index', 'fold'])])
 
                 pl_folds += [fold] * len(df_pl)
 
+            del X, df_pl
+
             src_df = src_df.with_columns(pl.Series("fold", np.concatenate([df["fold"].to_numpy(), df["fold"].to_numpy(), np.array(pl_folds)])))
+
+            del df
 
             print("Shape after pseudo labelilng", src_df.shape)
 
