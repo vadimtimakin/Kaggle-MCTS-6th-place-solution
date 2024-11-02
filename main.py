@@ -56,8 +56,8 @@ class Config:
     # Paths
     
     path_to_train_dataset = '/home/toefl/K/MCTS/dataset/train.csv' if LOCAL else '/kaggle/input/um-game-playing-strength-of-mcts-variants/train.csv' 
-    path_to_save_data_checkpoint = 'checkpoints/data_checkpoint_u.pickle'     # Drop columns, categorical columns, etc.
-    path_to_save_solver_checkpoint = 'checkpoints/solver_checkpoint_u.pickle' # Models, weights, etc.
+    path_to_save_data_checkpoint = 'checkpoints/data_checkpoint.pickle'     # Drop columns, categorical columns, etc.
+    path_to_save_solver_checkpoint = 'checkpoints/solver_checkpoint.pickle' # Models, weights, etc.
 
     path_to_load_features = 'feature.pickle' if LOCAL else '/kaggle/input/mcts-solution-checkpoint/feature.pickle'
     path_to_tfidf = '/home/toefl/K/MCTS/dataset/tf_idf' if LOCAL else '/kaggle/input/mcts-solution-checkpoint/tf_idf'
@@ -76,7 +76,7 @@ class Config:
     
     n_splits = 5
 
-    pl_power = 0
+    pl_power = 1
     n_openfe_features = (0, 500)
     n_tf_ids_features = 0
     
@@ -423,6 +423,12 @@ class Dataset:
                         del model
                         gc.collect()
 
+                    preds = np.clip(preds, -1, 1)
+
+                    labels = np.array([-0.4666666666666667, -0.3333333333333333, -0.0666666666666666, 0.0666666666666666, 0.2, -0.2, -0.7333333333333333, 0.6, 0.4666666666666667, 0.3333333333333333, -0.6, 0.4, 0.1333333333333333, 0.2666666666666666, 0.5333333333333333, 0.7333333333333333, 1.0, 0.8, 0.9333333333333332, 0.8666666666666667, -0.1333333333333333, -1.0, 0.6666666666666666, -0.2666666666666666, -0.5333333333333333, 0.0, -0.4, 0.3666666666666666, -0.8666666666666667, -0.9333333333333332, -0.6666666666666666, -0.8, 0.2888888888888888, 0.0333333333333333, -0.9666666666666668, 0.5666666666666667, 0.9, -0.8333333333333334, -0.4333333333333333, -0.1666666666666666, 0.1, 0.3, -0.5, -0.5666666666666667, 0.7666666666666667, -0.7, 0.2333333333333333, -0.7666666666666667, 0.1666666666666666, -0.1, -0.2333333333333333, 0.9666666666666668, 0.8333333333333334, -0.6333333333333333, -0.0333333333333333, 0.9555555555555556, -0.9555555555555556, -0.3666666666666666, -0.3, 0.5, 0.7, 0.6333333333333333, 0.4333333333333333, -0.9, 0.0222222222222222, 0.2444444444444444, 0.4444444444444444, -0.4444444444444444])
+
+                    preds = np.array([labels[np.abs(labels - v).argmin()] for v in preds])
+
                     src_df = pl.concat([src_df, df_pl.with_columns(pl.Series('utility_agent1', preds), pl.lit("pl").alias("data_mode")).drop(['index', 'fold'])])
 
                     pl_folds += [fold] * len(df_pl)
@@ -699,6 +705,8 @@ class Solver:
             X_train = X_train.drop(["index"], axis=1)
             X_valid = X_valid.drop(["index"], axis=1)
             X_valid_src = X_valid_src.drop(["index"], axis=1)
+
+            print(X_train.columns)
 
             print('Original features shape', X_train.shape, X_valid_src.shape)
             
