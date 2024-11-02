@@ -74,7 +74,7 @@ class Config:
 
     task = "regression"
     
-    n_splits = 5
+    n_splits = 10
 
     pl_power = 1
     n_openfe_features = (0, 500)
@@ -113,15 +113,28 @@ class Config:
         'verbose': -1,
         'seed': 42
     }
+
+    xgb_params = {
+        'objective': 'reg:squarederror',
+        'booster': 'gbtree',
+        'tree_method': 'auto',
+        'predictor': 'cpu_predictor',
+        'eval_metric': 'mape', 
+        'n_jobs': 8,
+        'n_estimators': 100,
+        'random_state': 0xFACED,
+    }
     
     to_train = {
         "catboost": True,
-        "lgbm": False,
+        "lgbm": True,
+        "xgboost": False,
     }
     
     weights = {
         "catboost": 1,
         "lgbm": 0,
+        "xgboost": 0,
     }
 
 
