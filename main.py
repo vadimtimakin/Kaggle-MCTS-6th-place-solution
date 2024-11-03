@@ -13,7 +13,7 @@ import pandas as pd
 from tqdm import tqdm
 
 import lightgbm as lgb
-from catboost import CatBoostRegressor, CatBoostClassifier
+from catboost import CatBoostRegressor, CatBoostClassifier, Pool
 
 from sklearn.metrics import mean_squared_error
 from sklearn.feature_extraction.text import TfidfVectorizer
@@ -56,8 +56,8 @@ class Config:
     # Paths
     
     path_to_train_dataset = '/home/toefl/K/MCTS/dataset/train.csv' if LOCAL else '/kaggle/input/um-game-playing-strength-of-mcts-variants/train.csv' 
-    path_to_save_data_checkpoint = 'checkpoints/data_checkpoint.pickle'     # Drop columns, categorical columns, etc.
-    path_to_save_solver_checkpoint = 'checkpoints/solver_checkpoint.pickle' # Models, weights, etc.
+    path_to_save_data_checkpoint = 'checkpoints/data_checkpoint_baseline.pickle'     # Drop columns, categorical columns, etc.
+    path_to_save_solver_checkpoint = 'checkpoints/solver_checkpoint_baseline.pickle' # Models, weights, etc.
 
     path_to_load_features = 'feature.pickle' if LOCAL else '/kaggle/input/mcts-solution-checkpoint/feature.pickle'
     path_to_tfidf = '/home/toefl/K/MCTS/dataset/tf_idf' if LOCAL else '/kaggle/input/mcts-solution-checkpoint/tf_idf'
@@ -66,6 +66,7 @@ class Config:
     path_to_load_solver_checkpoint = {
         "num_games": 'checkpoints/solver_checkpoint_numgames.pickle' if LOCAL else '/kaggle/input/mcts-solution-checkpoint/solver_checkpoint_numgames.pickle', 
         "main": 'checkpoints/solver_checkpoint.pickle' if LOCAL else '/kaggle/input/mcts-solution-checkpoint/solver_checkpoint.pickle',
+        "baseline": 'checkpoints/solver_checkpoint_baseline.pickle',
         "draw": 'checkpoints/solver_checkpoint_draw.pickle' if LOCAL else '/kaggle/input/mcts-solution-checkpoint/solver_checkpoint_draw.pickle',
         "pl": 'checkpoints/solver_checkpoint_pl.pickle',
     }
@@ -76,9 +77,10 @@ class Config:
     
     n_splits = 10
 
-    pl_power = 1
+    pl_power = 0
     n_openfe_features = (0, 500)
     n_tf_ids_features = 0
+    use_baseline_scores = False
     
     catboost_params = {
         'iterations': 30000,
@@ -463,7 +465,7 @@ class Dataset:
             # Drop duplicates.
 
             columns_for_duplicates = [column for column in src_df.columns if column != "data_mode"]
-            src_df = src_df.unique(subset=columns_for_duplicates)
+            src_df = src_df.unique(subset=columns_for_duplicates, maintain_order=True)
             print("Data shape after dropping duplicates", src_df.shape)
 
             return src_df
@@ -681,6 +683,10 @@ class Solver:
         scores = []
         oof_preds, oof_labels, oof_mask = np.zeros([len(df)]), np.zeros([len(df)]), np.zeros([len(df)])
 
+        if self.config.use_baseline_scores:
+            with open(self.config.path_to_load_solver_checkpoint["baseline"], "rb") as f:
+                baseline = pickle.load(f)["lgbm"]["oof_preds"]
+
         if model_name == "catboost":
             feature_importances = None
 
@@ -695,6 +701,9 @@ class Solver:
 
             X_train, X_valid = X.iloc[train_index], X.iloc[valid_index]
             Y_train, Y_valid = Y.iloc[train_index], Y.iloc[valid_index]
+
+            if self.config.use_baseline_scores:
+                baseline_train, baseline_valid = baseline[train_index], baseline[valid_index]
 
             print("X-train and X-valid shapes", X_train.shape, X_valid.shape)
 
@@ -711,6 +720,9 @@ class Solver:
             X_valid_src = X_valid[mask]
             Y_valid_src = Y_valid[mask]
 
+            if self.config.use_baseline_scores:
+                baseline_valid_src = baseline_valid[mask]
+
             X_train = X_train.drop(["data_mode"], axis=1)
             X_valid = X_valid.drop(["data_mode"], axis=1)
             X_valid_src = X_valid_src.drop(["data_mode"], axis=1)
@@ -720,6 +732,12 @@ class Solver:
             X_valid_src = X_valid_src.drop(["index"], axis=1)
 
             print(X_train.columns)
+            
+            if self.config.use_baseline_scores:
+                print("Baseline scores")
+                print("\tTrain", round(mean_squared_error(Y_train, baseline_train, squared=False), 4))
+                print("\tVal", round(mean_squared_error(Y_valid_src, baseline_valid_src, squared=False), 4))
+                print("\tVal full", round(mean_squared_error(Y_valid, baseline_valid, squared=False), 4))
 
             print('Original features shape', X_train.shape, X_valid_src.shape)
             
@@ -732,7 +750,14 @@ class Solver:
                         model = CatBoostClassifier(**self.config.catboost_params, cat_features=catcols)
                     else:
                         model = CatBoostRegressor(**self.config.catboost_params, cat_features=catcols)
-                    model.fit(X_train, Y_train, eval_set=(X_valid_src, Y_valid_src))
+
+                    if self.config.use_baseline_scores:
+                        train_pool = Pool(X_train, Y_train, baseline=baseline_train, cat_features=catcols)
+                        valid_pool = Pool(X_valid_src, Y_valid_src, baseline=baseline_valid_src, cat_features=catcols)
+                    else:
+                        train_pool = Pool(X_train, Y_train, cat_features=catcols)
+                        valid_pool = Pool(X_valid_src, Y_valid_src, cat_features=catcols)
+                    model.fit(train_pool, eval_set=valid_pool)
                     
                 elif model_name == "lgbm":
                     model = lgb.LGBMRegressor(**self.config.lgbm_params)
@@ -753,8 +778,12 @@ class Solver:
                 preds = model.predict(X_valid_src).astype(float)
                 preds = preds[0]
             else:
-                preds = model.predict(X_valid_src)
-                full_preds = model.predict(X_valid)
+                if self.config.use_baseline_scores:
+                    preds = model.predict(Pool(X_valid_src, baseline=baseline_valid_src, cat_features=catcols))
+                    full_preds = model.predict(Pool(X_valid, baseline=baseline_valid, cat_features=catcols))
+                else:
+                    preds = model.predict(Pool(X_valid_src, cat_features=catcols))
+                    full_preds = model.predict(Pool(X_valid, cat_features=catcols))
             
             # Save the scores and the metrics.
             
@@ -871,7 +900,7 @@ class Solver:
         
         for model_name, weight in self.config.weights.items():
             
-            if model_name not in self.models: continue
+            if model_name not in self.models or weight == 0: continue
             
             preds = np.zeros(len(X))
 
