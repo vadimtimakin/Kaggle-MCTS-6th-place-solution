@@ -56,8 +56,8 @@ class Config:
     # Paths
     
     path_to_train_dataset = '/home/toefl/K/MCTS/dataset/train.csv' if LOCAL else '/kaggle/input/um-game-playing-strength-of-mcts-variants/train.csv' 
-    path_to_save_data_checkpoint = 'checkpoints/data_checkpoint_baseline.pickle'     # Drop columns, categorical columns, etc.
-    path_to_save_solver_checkpoint = 'checkpoints/solver_checkpoint_baseline.pickle' # Models, weights, etc.
+    path_to_save_data_checkpoint = 'checkpoints/data_checkpoint_oof.pickle'     # Drop columns, categorical columns, etc.
+    path_to_save_solver_checkpoint = 'checkpoints/solver_checkpoint_oof.pickle' # Models, weights, etc.
 
     path_to_load_features = 'feature.pickle' if LOCAL else '/kaggle/input/mcts-solution-checkpoint/feature.pickle'
     path_to_tfidf = '/home/toefl/K/MCTS/dataset/tf_idf' if LOCAL else '/kaggle/input/mcts-solution-checkpoint/tf_idf'
@@ -67,6 +67,7 @@ class Config:
         "num_games": 'checkpoints/solver_checkpoint_numgames.pickle' if LOCAL else '/kaggle/input/mcts-solution-checkpoint/solver_checkpoint_numgames.pickle', 
         "main": 'checkpoints/solver_checkpoint.pickle' if LOCAL else '/kaggle/input/mcts-solution-checkpoint/solver_checkpoint.pickle',
         "baseline": 'checkpoints/solver_checkpoint_baseline.pickle',
+        "oof": 'checkpoints/solver_checkpoint_baseline.pickle',
         "draw": 'checkpoints/solver_checkpoint_draw.pickle' if LOCAL else '/kaggle/input/mcts-solution-checkpoint/solver_checkpoint_draw.pickle',
         "pl": 'checkpoints/solver_checkpoint_pl.pickle',
     }
@@ -80,6 +81,8 @@ class Config:
     pl_power = 0
     n_openfe_features = (0, 500)
     n_tf_ids_features = 0
+
+    use_oof = False
     use_baseline_scores = False
     
     catboost_params = {
@@ -857,9 +860,15 @@ class Solver:
         X = df.drop(['utility_agent1', 'fold'], axis=1).rename(columns = lambda x:re.sub('[^A-Za-z0-9_]+', '', x)).reset_index()
         Y = df['utility_agent1']
         catcols = data_checkpoint["catcols"]
-        
+
         if oof_features is not None:
             X["oof"] = oof_features
+
+        if self.config.use_oof:
+            with open(self.config.path_to_load_solver_checkpoint["oof"], "rb") as f:
+                data = pickle.load(f)
+                X["oof_lgbm"] = data["lgbm"]["oof_preds"]
+                X["oof_catboost"] = data["catboost"]["oof_preds"]
             
         # Train models.
         
