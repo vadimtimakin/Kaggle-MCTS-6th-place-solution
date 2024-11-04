@@ -85,6 +85,7 @@ class Config:
     use_oof = False
     use_baseline_scores = False
     show_shap = False
+    mask_filter = False
     
     catboost_params = {
         'iterations': 30000,
@@ -179,10 +180,6 @@ class Dataset:
         # Mirror the dataset.
         
         if self.config.is_train:
-            with open('checkpoints/rmse_mask.pickle', 'rb') as file:
-                rmse_mask = pickle.load(file)
-
-            df = df.with_columns(pl.Series('mask', (rmse_mask < 0.01)))
 
             df = df.with_columns(pl.lit("original").alias("data_mode"))
 
@@ -198,6 +195,10 @@ class Dataset:
             )
 
             df = pl.concat([df, df_mirror])
+
+            with open('checkpoints/rmse_mask_full.pickle', 'rb') as file:
+                rmse_mask = pickle.load(file)
+                df = df.with_columns(pl.Series('mask', (rmse_mask < np.quantile(rmse_mask, 0.9))))
         
             print("Shape after data generation", df.shape)
         
@@ -461,8 +462,10 @@ class Dataset:
             print("Shape after pseudo labelilng", src_df.shape)
 
             # Filter by RMSE mask.
-
-            # src_df = src_df.filter((pl.col('mask') == True) | (pl.col('data_mode') == "original")) 
+            
+            if self.config.mask_filter:
+                src_df = src_df.filter((pl.col('mask') == True) | (pl.col('data_mode') == "original")) 
+            
             src_df = src_df.drop(['mask', 'index', 'agent1', 'agent2'], strict=False)
             print("Data shape after filtering by mask", src_df.shape)
 
