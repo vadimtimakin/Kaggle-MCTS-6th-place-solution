@@ -162,7 +162,6 @@ def transform(X_train, X_test, new_features_list, valid_features, n_jobs, name="
         if mask[i]: continue
         res = results[i]
         is_cat, d1, d2, f = res.result()
-        print(f.replace('src_', ''))
         names.append('autoFE_f_%d' % i + name)
         names_map['autoFE_f_%d' % i + name] = f
         _train.append(d1)

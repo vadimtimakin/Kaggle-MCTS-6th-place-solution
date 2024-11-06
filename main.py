@@ -58,23 +58,18 @@ class Config:
     # Paths
     
     path_to_train_dataset = '/home/toefl/K/MCTS/dataset/train.csv' if LOCAL else '/kaggle/input/um-game-playing-strength-of-mcts-variants/train.csv' 
-    path_to_save_data_checkpoint = 'checkpoints/data_checkpoint_stacked.pickle'     # Drop columns, categorical columns, etc.
-    path_to_save_solver_checkpoint = 'checkpoints/solver_checkpoint_stacked.pickle' # Models, weights, etc.
 
     path_to_load_features = 'feature.pickle' if LOCAL else '/kaggle/input/mcts-solution-checkpoint/feature.pickle'
     path_to_tfidf = '/home/toefl/K/MCTS/dataset/tf_idf' if LOCAL else '/kaggle/input/mcts-solution-checkpoint/tf_idf'
-    path_to_load_data_checkpoint = 'checkpoints/data_checkpoint_u.pickle' if LOCAL else '/kaggle/input/mcts-solution-checkpoint/data_checkpoint.pickle'
 
+    path_to_save_data_checkpoint = 'checkpoints/data_checkpoint_stacked'     # Drop columns, categorical columns, etc.
+    path_to_save_solver_checkpoint = 'checkpoints/solver_checkpoint_stacked' # Models, weights, etc.
+
+    path_to_load_data_checkpoint = 'checkpoints/data_checkpoint.pickle' if LOCAL else '/kaggle/input/mcts-solution-checkpoint/data_checkpoint.pickle'
     path_to_load_solver_checkpoint = {
-        "num_games": 'checkpoints/solver_checkpoint_numgames.pickle' if LOCAL else '/kaggle/input/mcts-solution-checkpoint/solver_checkpoint_numgames.pickle', 
-        "main": 'checkpoints/solver_checkpoint_u.pickle' if LOCAL else '/kaggle/input/mcts-solution-checkpoint/solver_checkpoint.pickle',
-        "baseline": 'checkpoints/solver_checkpoint_baseline.pickle',
-        "oof": 'checkpoints/solver_checkpoint_baseline.pickle',
-        "draw": 'checkpoints/solver_checkpoint_draw.pickle' if LOCAL else '/kaggle/input/mcts-solution-checkpoint/solver_checkpoint_draw.pickle',
-        "pl": 'checkpoints/solver_checkpoint_pl.pickle',
+        "main": 'checkpoints/solver_checkpoint_stacked' if LOCAL else '/kaggle/input/mcts-solution-checkpoint/solver_checkpoint_stacked',
     }
     
-
     task = "regression"
     
     n_splits = 5
@@ -87,7 +82,7 @@ class Config:
     use_baseline_scores = False
     show_shap = False
     mask_filter = False
-    stacked = False
+    stacked = True
     
     catboost_params = {
         'iterations': 30000,
@@ -635,12 +630,7 @@ class Solver:
         
         self.config = config
         self.rerun = rerun
-        
-        try:
-            with open(config.path_to_load_solver_checkpoint["main"], "rb") as f:
-                self.models = pickle.load(f)
-        except FileNotFoundError:
-            self.models = {}
+        self.models = {}
 
     def generate_TF_IDF(self, df, mode, fold, n_tf_ids_features):
         """Generate TF-IDF features."""
@@ -683,21 +673,11 @@ class Solver:
     def train_one_model(self, df, X, Y, groups, catcols, model_name) -> Tuple[np.array, np.array, Union[pl.DataFrame, None]]:
         """Train N folds of a certain model."""
         
-        # Initialize.
-        
-        if not self.rerun:
-            self.models[model_name] = {
-                "models": [],
-                "models_stacked": [],
-            }
-            
-        if len(self.models[model_name]["models"]) != self.config.n_splits:
-            self.models[model_name]["models"] = [None] * self.config.n_splits
-        
         # Define the instances for the metrics.
 
         scores = []
         oof_preds, oof_labels, oof_mask = np.zeros([len(df)]), np.zeros([len(df)]), np.zeros([len(df)])
+        oof_baseline_preds =  np.zeros([len(df)])
 
         if self.config.use_baseline_scores:
             with open(self.config.path_to_load_solver_checkpoint["baseline"], "rb") as f:
@@ -756,64 +736,87 @@ class Solver:
                 print("\tVal full", round(mean_squared_error(Y_valid, baseline_valid, squared=False), 4))
 
             print('Original features shape', X_train.shape, X_valid_src.shape)
+
+            # Create model.
+
+            if model_name == "catboost":
+                if self.config.task == "classification":
+                    base_model = CatBoostClassifier(**self.config.catboost_params, cat_features=catcols)
+                else:
+                    base_model = CatBoostRegressor(**self.config.catboost_params, cat_features=catcols)
+                
+            elif model_name == "lgbm":
+                base_model = lgb.LGBMRegressor(**self.config.lgbm_params)
+
+            # Build stacked model with nested cross-validation.
+
+            if self.config.stacked:
+
+                inner_cv = StratifiedGroupKFold(n_splits=self.config.n_splits, shuffle=True, random_state=self.config.seed)
+
+                inner_split = inner_cv.split(
+                    X_train,
+                    Y_train.astype(str) + "_" + X_train["p1_agent"].astype(str),
+                    groups.iloc[train_index]
+                )
+                
+                oof_inner = np.zeros_like(Y_train)
+                oof_valid = np.zeros_like(Y_valid)
+                oof_valid_src = np.zeros_like(Y_valid_src)
+
+                for inner_fold, (idx_tr_inner, idx_va_inner) in enumerate(inner_split):
+                    print(f"Inner fold {inner_fold}.")
+
+                    X_tr_inner = X_train.iloc[idx_tr_inner]
+                    X_va_inner = X_train.iloc[idx_va_inner]
+                    y_tr_inner = Y_train.iloc[idx_tr_inner]
+                    y_va_inner = Y_train.iloc[idx_va_inner]
+
+                    if not self.rerun:
+                        model = clone(base_model)
+
+                        if model_name == "catboost":
+                            model.set_params(random_seed=58)
+                            model.fit(X_tr_inner, y_tr_inner, eval_set=(X_va_inner, y_va_inner))
+                        elif model_name == "lgbm":
+                            model.fit(X_train, Y_train,
+                                eval_set=[(X_valid_src, Y_valid_src)],
+                                eval_metric='rmse',
+                                callbacks=[
+                                    lgb.early_stopping(self.config.catboost_params["early_stopping_rounds"]),
+                                    lgb.log_evaluation(self.config.catboost_params["verbose"])
+                            ])
+                    
+                        path_to_save = os.path.join(self.config.path_to_save_solver_checkpoint, f"inner_{model_name}_{fold}_{inner_fold}.pickle")
+                        with open(path_to_save, "wb") as f:
+                            pickle.dump(model, f)
+                    else:
+                        path_to_load = os.path.join(self.config.path_to_load_solver_checkpoint["main"], f"inner_{model_name}_{fold}_{inner_fold}.pickle")
+                        with open(path_to_load, "rb") as f:
+                            model = pickle.load(f)
+
+                    y_pred = model.predict(X_va_inner)
+                    oof_valid += model.predict(X_valid) / self.config.n_splits
+                    oof_valid_src += model.predict(X_valid_src) / self.config.n_splits
+                    oof_inner[idx_va_inner] += y_pred
+
+                    del model
+
+                X_train['oof_feature'] = oof_inner
+                X_valid['oof_feature'] = oof_valid
+                X_valid_src['oof_feature'] = oof_valid_src
+
+                oof_baseline_preds[valid_index] = oof_valid
             
-            # Create and fit the model.
+            # Create and fit the main model.
             
             if not self.rerun:
                 
+                print("\nMain model")
+
+                model = base_model
+
                 if model_name == "catboost":
-                    if self.config.task == "classification":
-                        cbm = CatBoostClassifier(**self.config.catboost_params, cat_features=catcols)
-                    else:
-                        cbm = CatBoostRegressor(**self.config.catboost_params, cat_features=catcols)
-
-                    # Build Stacked catboost model with nested cross-validation.
-
-                    if self.config.stacked:
-
-                        inner_cv = StratifiedGroupKFold(n_splits=self.config.n_splits, shuffle=True, random_state=self.config.seed)
-
-                        inner_split = inner_cv.split(
-                            X_train,
-                            Y_train.astype(str) + "_" + X_train["p1_agent"].astype(str),
-                            groups.iloc[train_index]
-                        )
-                        
-                        oof_inner = np.zeros_like(Y_train)
-                        oof_valid = np.zeros_like(Y_valid)
-                        oof_valid_src = np.zeros_like(Y_valid_src)
-
-                        for fold, (idx_tr_inner, idx_va_inner) in enumerate(inner_split):
-                            print(f"Inner fold {fold}.")
-
-                            X_tr_inner = X_train.iloc[idx_tr_inner]
-                            X_va_inner = X_train.iloc[idx_va_inner]
-                            y_tr_inner = Y_train.iloc[idx_tr_inner]
-                            y_va_inner = Y_train.iloc[idx_va_inner]
-
-                            model = clone(cbm)
-                            model.set_params(random_seed=58)
-                            model.fit(X_tr_inner, y_tr_inner, eval_set=(X_va_inner, y_va_inner))
-
-                            self.models[model_name]["models_stacked"].append(model)
-
-                            y_pred = model.predict(X_va_inner)
-                            oof_valid += model.predict(X_valid) / self.config.n_splits
-                            oof_valid_src += model.predict(X_valid_src) / self.config.n_splits
-                            oof_inner[idx_va_inner] += y_pred
-
-                            del model
-
-                        X_train['oof_feature'] = oof_inner
-                        X_valid['oof_feature'] = oof_valid
-                        X_valid_src['oof_feature'] = oof_valid_src
-
-                    # Train final model.
-
-                    print("\nFinal model")
-
-                    model = cbm
-
                     if self.config.use_baseline_scores:
                         train_pool = Pool(X_train, Y_train, baseline=baseline_train, cat_features=catcols)
                         valid_pool = Pool(X_valid_src, Y_valid_src, baseline=baseline_valid_src, cat_features=catcols)
@@ -823,30 +826,36 @@ class Solver:
                     model.fit(train_pool, eval_set=valid_pool)
                     
                 elif model_name == "lgbm":
-                    model = lgb.LGBMRegressor(**self.config.lgbm_params)
                     model.fit(X_train, Y_train,
-                      eval_set=[(X_valid_src, Y_valid_src)],
-                      eval_metric='rmse',
-                      callbacks=[
-                          lgb.early_stopping(self.config.catboost_params["early_stopping_rounds"]),
-                           lgb.log_evaluation(self.config.catboost_params["verbose"])
-                      ])
+                        eval_set=[(X_valid_src, Y_valid_src)],
+                        eval_metric='rmse',
+                        callbacks=[
+                            lgb.early_stopping(self.config.catboost_params["early_stopping_rounds"]),
+                            lgb.log_evaluation(self.config.catboost_params["verbose"])
+                    ])
+                
             else:
-                model = self.models[model_name]["models"][fold]
+                path_to_load = os.path.join(self.config.path_to_load_solver_checkpoint["main"], f"main_{model_name}_{fold}.pickle")
+                with open(path_to_load, "rb") as f:
+                    model = pickle.load(f)
             
             # Prediction (with TTA).
             
-            if self.config.task == "classification":
-                Y_valid_src = Y_valid_src.astype(np.float)
-                preds = model.predict(X_valid_src).astype(float)
-                preds = preds[0]
-            else:
-                if self.config.use_baseline_scores:
-                    preds = model.predict(Pool(X_valid_src, baseline=baseline_valid_src, cat_features=catcols))
-                    full_preds = model.predict(Pool(X_valid, baseline=baseline_valid, cat_features=catcols))
+            if model_name == "catboost":
+                if self.config.task == "classification":
+                    Y_valid_src = Y_valid_src.astype(np.float)
+                    preds = model.predict(X_valid_src).astype(float)
+                    preds = preds[0]
                 else:
-                    preds = model.predict(Pool(X_valid_src, cat_features=catcols))
-                    full_preds = model.predict(Pool(X_valid, cat_features=catcols))
+                    if self.config.use_baseline_scores:
+                        preds = model.predict(Pool(X_valid_src, baseline=baseline_valid_src, cat_features=catcols))
+                        full_preds = model.predict(Pool(X_valid, baseline=baseline_valid, cat_features=catcols))
+                    else:
+                        preds = model.predict(Pool(X_valid_src, cat_features=catcols))
+                        full_preds = model.predict(Pool(X_valid, cat_features=catcols))
+            elif model_name == "lgbm":
+                preds = model.predict(X_valid_src)
+                full_preds = model.predict(X_valid)
             
             # Save the scores and the metrics.
             
@@ -870,7 +879,9 @@ class Solver:
                 shap.plots.beeswarm(shap_values, max_display=20)
             
             if not self.rerun:
-                self.models[model_name]["models"][fold] = model
+                path_to_save = os.path.join(self.config.path_to_save_solver_checkpoint, f"main_{model_name}_{fold}.pickle")
+                with open(path_to_save, "wb") as f:
+                    pickle.dump(model, f)
                 
             if model_name == "catboost":
                 if feature_importances is None:
@@ -894,6 +905,7 @@ class Solver:
             
         oof_score = mean_squared_error(oof_labels, oof_preds, squared=False)
         
+        self.models[model_name]["oof_baseline_preds"] = oof_baseline_preds
         self.models[model_name]["oof_preds"] = oof_preds
         self.models[model_name]["oof_labels"] = oof_labels
         self.models[model_name]["mode"] = oof_mask
@@ -921,6 +933,11 @@ class Solver:
             
     def fit(self, df: pl.DataFrame, data_checkpoint: dict, oof_features=None) -> dict:
         """Training."""
+
+        # Create checkpoint folder.
+
+        if not os.path.exists(self.config.path_to_save_solver_checkpoint):
+            os.mkdir(self.config.path_to_save_solver_checkpoint)
         
         # Select the feature and the targets.
         
@@ -929,9 +946,6 @@ class Solver:
         groups = df['GameRulesetName']
 
         catcols = data_checkpoint["catcols"]
-
-        if oof_features is not None:
-            X["oof"] = oof_features
 
         if self.config.use_oof:
             with open(self.config.path_to_load_solver_checkpoint["oof"], "rb") as f:
@@ -945,6 +959,7 @@ class Solver:
         
         for model_name, to_train in self.config.to_train.items():
             if to_train:
+                self.models[model_name] = {}
                 artifacts[model_name] = {}
 
                 oof_labels, oof_preds, feature_importance = self.train_one_model(df, X, Y, groups, catcols, model_name)
@@ -956,7 +971,7 @@ class Solver:
         # Save solution checkpoint for the inference.
         
         if self.config.is_train and not self.rerun:
-            with open(self.config.path_to_save_solver_checkpoint, "wb") as f:
+            with open(self.config.path_to_save_solver_checkpoint + '.pickle', "wb") as f:
                 pickle.dump(self.models, f)
         elif self.rerun:
             pass
