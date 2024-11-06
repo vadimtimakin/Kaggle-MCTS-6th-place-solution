@@ -15,7 +15,6 @@ import pandas as pd
 import lightgbm as lgb
 from catboost import CatBoostRegressor, CatBoostClassifier, Pool
 
-from sklearn.base import clone
 from sklearn.metrics import mean_squared_error
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.model_selection import StratifiedGroupKFold
@@ -24,7 +23,6 @@ from typing import Tuple, Union
 from itertools import permutations, combinations
 
 import sys
-sys.path.append('/home/toefl/K/MCTS/openfe')
 sys.path.append('/home/toefl/K/MCTS/dataset/')
 sys.path.append('/kaggle/input/openfe-modified')
 
@@ -58,8 +56,8 @@ class Config:
     # Paths
     
     path_to_train_dataset = '/home/toefl/K/MCTS/dataset/train.csv' if LOCAL else '/kaggle/input/um-game-playing-strength-of-mcts-variants/train.csv' 
-    path_to_save_data_checkpoint = 'checkpoints/data_checkpoint_stacked.pickle'     # Drop columns, categorical columns, etc.
-    path_to_save_solver_checkpoint = 'checkpoints/solver_checkpoint_stacked.pickle' # Models, weights, etc.
+    path_to_save_data_checkpoint = 'checkpoints/data_checkpoint.pickle'     # Drop columns, categorical columns, etc.
+    path_to_save_solver_checkpoint = 'checkpoints/solver_checkpoint.pickle' # Models, weights, etc.
 
     path_to_load_features = 'feature.pickle' if LOCAL else '/kaggle/input/mcts-solution-checkpoint/feature.pickle'
     path_to_tfidf = '/home/toefl/K/MCTS/dataset/tf_idf' if LOCAL else '/kaggle/input/mcts-solution-checkpoint/tf_idf'
@@ -74,20 +72,20 @@ class Config:
         "pl": 'checkpoints/solver_checkpoint_pl.pickle',
     }
     
+    # Training
 
     task = "regression"
     
     n_splits = 5
 
     pl_power = 0
-    n_openfe_features = (0, 500, 0)
+    n_openfe_features = (0, 500)
     n_tf_ids_features = 0
 
     use_oof = False
     use_baseline_scores = False
     show_shap = False
     mask_filter = False
-    stacked = False
     
     catboost_params = {
         'iterations': 30000,
@@ -288,18 +286,14 @@ class Dataset:
             
             ofe_features_basic = ofe_features[:self.config.n_openfe_features[0]]
             ofe_features_num = [feature for feature in ofe_features[self.config.n_openfe_features[0]:] if feature.name in operators]
-            ofe_features_num = ofe_features_num[:self.config.n_openfe_features[1]]
-
-            ofe_features_combine = [feature for feature in ofe_features if feature.name == "Combine"][:self.config.n_openfe_features[2]]
+            basic_num_count = len([f for f in ofe_features_basic if f.name in operators]) 
+            ofe_features_num = ofe_features_num[:max(self.config.n_openfe_features[1], basic_num_count) - basic_num_count]
 
             ofe_features = ofe_features_basic + ofe_features_num
 
         if self.config.n_openfe_features != (0, 0):
             valid_features = sorted([112, 468, 386, 6, 333, 357, 353, 194, 59, 174, 191, 182, 436, 261, 328, 189, 8, 275, 279, 223, 154, 319, 221, 218, 380, 402, 276, 1, 253, 362, 294, 108, 484, 11, 200, 356, 491, 2, 248, 176, 449, 335, 310, 479, 322, 446, 198, 116, 206, 214])
-            df, _ = transform(df, df[:10], ofe_features, valid_features, name="num", n_jobs=1)
-            if self.config.n_openfe_features[2] != 0:
-                df, _ = transform(df, df[:10], ofe_features_combine, None, name="combine", n_jobs=1)
-        
+            df, _ = transform(df, df[:10], ofe_features, valid_features, n_jobs=1)
             del ofe_features
 
         df = df.drop([column for column in df.columns if 'index' in column], axis=1)
@@ -513,6 +507,7 @@ class Dataset:
             df = pl.from_pandas(df)
 
         columns_to_drop = [
+            'GameRulesetName',
             'PieceState', 'GraphStyle', 'MovesOperators', 'SowCCW', 'ScoreDifferenceMedian', 'AbsoluteDirections', 'PushEffectFrequency', 'LineWin', 'LeapDecisionToEmptyFrequency', 'AlquerqueBoardWithOneTriangle', 'TaflStyle', 'Capture', 'Even', 'RegularShape', 'SlideDecisionToFriendFrequency', 'SwapPiecesDecisionFrequency', 'AddDecision', 'LineLossFrequency', 'CheckmateFrequency', 'Multiplication', 'MoveAgain', 'TriangleTiling', 'SetSiteState', 'SwapPlayersDecision', 'RemoveDecision', 'LineOfSight', 'CaptureEnd', 'SquareTiling', 'ForwardsDirection', 'NoProgressEndFrequency', 'Draw', 'Odd', 'Parity', 'ConnectionLossFrequency', 'NoMovesWin', 'SurakartaStyle', 'Checkmate', 'TrackLoop', 'StepEffect', 'StepDecisionToFriend', 'Maximum', 'HopEffect', 'NineMensMorrisBoard', 'TriangleShape', 'FillWinFrequency', 'Style', 'FlipFrequency', 'VoteEffect', 'NoMoves', 'Meta', 'GroupEndFrequency', 'Hand', 'NoMovesEnd', 'CountPiecesMoverComparison', 'FromToDecision', 'StackType', 'IsEnemy', 'AlquerqueBoardWithFourTriangles', 'MancalaFourRows', 'Group', 'HopDecisionFriendToEnemyFrequency', 'NoOwnPiecesWinFrequency', 'CountPiecesComparison', 'VoteDecision', 'NoProgressDrawFrequency', 'RaceEnd', 'SetRotation', 'CrossBoard', 'SwapPlayersEffect', 'PieceRotation', 'ReplacementCapture', 'TerritoryWinFrequency', 'HopDecisionFriendToFriendFrequency', 'NoPieceMover', 'LineEnd', 'LeapDecision', 'PolygonShape', 'SemiRegularTiling', 'EliminatePiecesLossFrequency', 'NumDice', 'FromToDecisionFrequency', 'RemoveEffect', 'FillEndFrequency', 'CanMove', 'StarBoard', 'Track', 'PassEffect', 'ProposeDecisionFrequency', 'ConnectionEnd', 'Modulo', 'ChessComponent', 'NoProgressDraw', 'FromToDecisionEmpty', 'Scoring', 'LineLoss', 'PatternEnd', 'NoTargetPieceWinFrequency', 'NoOwnPiecesEnd', 'PatternEndFrequency', 'Efficiency', 'PenAndPaperStyle', 'ForgetValues', 'MancalaTwoRows', 'DiagonalDirection', 'HopDecision', 'PatternWinFrequency', 'StackState', 'Stack', 'StateType', 'ShowPieceState', 'AlquerqueBoardWithTwoTriangles', 'Math', 'TaflComponent', 'HopDecisionFriendToEmptyFrequency', 'InitialScore', 'PatternWin', 'SquarePyramidalShape', 'Directions', 'Pattern', 'SetMove', 'Division', 'PromotionEffect', 'ScoringLossFrequency', 'ShibumiStyle', 'ScoringWin', 'TrackOwned', 'ShowPieceValue', 'DiamondShape', 'GroupWinFrequency', 'LeapDecisionToEnemy', 'BackwardDirection', 'ScoringLoss', 'AddEffect', 'BackgammonStyle', 'ReachWin', 'Absolute', 'PieceValue', 'ScoringEnd', 'NoTargetPiece', 'HopDecisionFriendToEnemy', 'ScoringDraw', 'NoMovesLoss', 'ConnectionLoss', 'HopDecisionEnemyToEnemyFrequency', 'QueenComponent', 'PawnComponent', 'ShootDecision', 'Implementation', 'GroupEnd', 'NoMovesDrawFrequency', 'RememberValues', 'CircleTiling', 'ThreeMensMorrisBoard', 'FairyChessComponent', 'SetInternalCounter', 'BackwardLeftDirection', 'OppositeDirection', 'PromotionDecision', 'LeapEffect', 'Territory', 'Moves', 'FromToEffect', 'SlideEffect', 'SetCountFrequency', 'BishopComponent', 'CircleShape', 'ReachLoss', 'ProposeDecision', 'PloyComponent', 'XiangqiStyle', 'CheckmateWin', 'DiceD6', 'AggressiveActionsRatio', 'FromToDecisionFriend', 'ProgressCheck', 'ForwardDirection', 'LargePiece', 'HopCaptureMoreThanOne', 'DiceD4', 'LeftwardDirection', 'NoProgressEnd', 'InternalCounter', 'ByDieMove', 'FromToDecisionEnemy', 'CanNotMove', 'Minimum', 'Dice', 'Stochastic', 'HexTiling', 'SameDirection', 'PushEffect', 'ForwardLeftDirection', 'EliminatePiecesLoss', 'DirectionCapture', 'SowCapture', 'StepDecisionToEnemy', 'BackwardRightDirection', 'SlideDecision', 'InitialCost', 'LeapDecisionToEmpty', 'AlquerqueBoardWithEightTriangles', 'GroupWin', 'Tile', 'TerritoryEnd', 'DirectionCaptureFrequency', 'NoBoard', 'NoTargetPieceWin', 'ForwardRightDirection', 'ProposeEffectFrequency', 'TurnKo', 'NoOwnPiecesLossFrequency', 'RotationalDirection', 'SowRemove', 'HopDecisionEnemyToEnemy', 'RookComponent', 'TableStyle', 'TerritoryWin', 'MancalaSixRows', 'MaxDistance', 'NoOwnPiecesLoss', 'Threat', 'PositionalSuperko', 'CaptureSequence', 'NumOffDiagonalDirections', 'ProposeEffect', 'Roll', 'SlideDecisionToFriend', 'LineDraw', 'SetValue', 'GroupDraw', 'SumDice', 'ThreeMensMorrisBoardWithTwoTriangles', 'KingComponent', 'Repetition', 'SurroundCapture', 'Loop', 'NoOwnPiecesWin', 'BranchingFactorChangeNumTimesn', 'RotationDecision', 'LoopEndFrequency', 'InterveneCapture', 'HopDecisionFriendToEmpty', 'EliminatePiecesDrawFrequency', 'DiceD2', 'Edge', 'SetCount', 'RightwardDirection', 'LoopEnd', 'ShogiStyle', 'SwapPiecesDecision', 'FortyStonesWithFourGapsBoard', 'StarShape', 'Boardless', 'MancalaCircular', 'XiangqiComponent', 'ReachLossFrequency', 'Fill', 'SlideDecisionToEnemy', 'JanggiComponent', 'KintsBoard', 'ShogiComponent', 'SowBacktracking', 'Piece', 'InitialRandomPlacement', 'LoopWin', 'LoopWinFrequency', 'Flip', 'FillEnd', 'JanggiStyle', 'ShootDecisionFrequency', 'MancalaThreeRows', 'StrategoComponent', 'RotationDecisionFrequency', 'InterveneCaptureFrequency', 'EliminatePiecesDraw', 'AutoMove', 'PachisiBoard', 'GroupLoss', 'PathExtent', 'VisitedSites', 'Cooperation', 'SetRotationFrequency', 'FillWin', 'SpiralTiling', 'PathExtentEnd', 'SpiralShape', 'Team', 'ReachDrawFrequency', 'LeftwardsDirection', 'ReachDraw', 'PathExtentLoss', 'PathExtentWin', 'LoopLoss', 'RightwardsDirection'
         ]
 
@@ -545,7 +540,7 @@ class Dataset:
         if self.config.is_train:
             cat_mapping, catcols = {}, []
             for feature in df.columns:
-                if feature in ["fold", "data_mode", "utility_agent1", "GameRulesetName"]: continue
+                if feature in ["fold", "data_mode", "utility_agent1"]: continue
                 if (df[feature].dtype == object):
                     cat_mapping[feature] = "category"
                     catcols.append(feature)
@@ -680,15 +675,14 @@ class Solver:
         df = df.drop(str_cols, axis=1)
         return df
     
-    def train_one_model(self, df, X, Y, groups, catcols, model_name) -> Tuple[np.array, np.array, Union[pl.DataFrame, None]]:
+    def train_one_model(self, df, X, Y, catcols, model_name) -> Tuple[np.array, np.array, Union[pl.DataFrame, None]]:
         """Train N folds of a certain model."""
         
         # Initialize.
         
-        if not self.rerun:
+        if model_name not in self.models:
             self.models[model_name] = {
                 "models": [],
-                "models_stacked": [],
             }
             
         if len(self.models[model_name]["models"]) != self.config.n_splits:
@@ -763,56 +757,9 @@ class Solver:
                 
                 if model_name == "catboost":
                     if self.config.task == "classification":
-                        cbm = CatBoostClassifier(**self.config.catboost_params, cat_features=catcols)
+                        model = CatBoostClassifier(**self.config.catboost_params, cat_features=catcols)
                     else:
-                        cbm = CatBoostRegressor(**self.config.catboost_params, cat_features=catcols)
-
-                    # Build Stacked catboost model with nested cross-validation.
-
-                    if self.config.stacked:
-
-                        inner_cv = StratifiedGroupKFold(n_splits=self.config.n_splits, shuffle=True, random_state=self.config.seed)
-
-                        inner_split = inner_cv.split(
-                            X_train,
-                            Y_train.astype(str) + "_" + X_train["p1_agent"].astype(str),
-                            groups.iloc[train_index]
-                        )
-                        
-                        oof_inner = np.zeros_like(Y_train)
-                        oof_valid = np.zeros_like(Y_valid)
-                        oof_valid_src = np.zeros_like(Y_valid_src)
-
-                        for fold, (idx_tr_inner, idx_va_inner) in enumerate(inner_split):
-                            print(f"Inner fold {fold}.")
-
-                            X_tr_inner = X_train.iloc[idx_tr_inner]
-                            X_va_inner = X_train.iloc[idx_va_inner]
-                            y_tr_inner = Y_train.iloc[idx_tr_inner]
-                            y_va_inner = Y_train.iloc[idx_va_inner]
-
-                            model = clone(cbm)
-                            model.set_params(random_seed=58)
-                            model.fit(X_tr_inner, y_tr_inner, eval_set=(X_va_inner, y_va_inner))
-
-                            self.models[model_name]["models_stacked"].append(model)
-
-                            y_pred = model.predict(X_va_inner)
-                            oof_valid += model.predict(X_valid) / self.config.n_splits
-                            oof_valid_src += model.predict(X_valid_src) / self.config.n_splits
-                            oof_inner[idx_va_inner] += y_pred
-
-                            del model
-
-                        X_train['oof_feature'] = oof_inner
-                        X_valid['oof_feature'] = oof_valid
-                        X_valid_src['oof_feature'] = oof_valid_src
-
-                    # Train final model.
-
-                    print("\nFinal model")
-
-                    model = cbm
+                        model = CatBoostRegressor(**self.config.catboost_params, cat_features=catcols)
 
                     if self.config.use_baseline_scores:
                         train_pool = Pool(X_train, Y_train, baseline=baseline_train, cat_features=catcols)
@@ -924,10 +871,8 @@ class Solver:
         
         # Select the feature and the targets.
         
-        X = df.drop(['utility_agent1', 'fold', 'GameRulesetName'], axis=1).rename(columns = lambda x:re.sub('[^A-Za-z0-9_]+', '', x)).reset_index()
+        X = df.drop(['utility_agent1', 'fold'], axis=1).rename(columns = lambda x:re.sub('[^A-Za-z0-9_]+', '', x)).reset_index()
         Y = df['utility_agent1']
-        groups = df['GameRulesetName']
-
         catcols = data_checkpoint["catcols"]
 
         if oof_features is not None:
@@ -947,7 +892,7 @@ class Solver:
             if to_train:
                 artifacts[model_name] = {}
 
-                oof_labels, oof_preds, feature_importance = self.train_one_model(df, X, Y, groups, catcols, model_name)
+                oof_labels, oof_preds, feature_importance = self.train_one_model(df, X, Y, catcols, model_name)
 
                 artifacts[model_name]["oof_preds"] = oof_preds
                 artifacts[model_name]["oof_labels"] = oof_labels
@@ -991,7 +936,7 @@ class Solver:
             prediction += np.clip(preds, -1, 1) * weight
             
         return prediction
-   
+    
 
 # --- Train and inference ---
 
