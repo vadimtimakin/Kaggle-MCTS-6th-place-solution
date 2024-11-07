@@ -62,12 +62,13 @@ class Config:
     path_to_load_features = 'feature.pickle' if LOCAL else '/kaggle/input/mcts-solution-checkpoint/feature.pickle'
     path_to_tfidf = '/home/toefl/K/MCTS/dataset/tf_idf' if LOCAL else '/kaggle/input/mcts-solution-checkpoint/tf_idf'
 
-    path_to_save_data_checkpoint = 'checkpoints/data_checkpoint_stacked'     # Drop columns, categorical columns, etc.
-    path_to_save_solver_checkpoint = 'checkpoints/solver_checkpoint_stacked' # Models, weights, etc.
+    path_to_save_data_checkpoint = 'checkpoints/data_checkpoint_lgbm_oof'     # Drop columns, categorical columns, etc.
+    path_to_save_solver_checkpoint = 'checkpoints/solver_checkpoint_lgbm_oof' # Models, weights, etc.
 
     path_to_load_data_checkpoint = 'checkpoints/data_checkpoint.pickle' if LOCAL else '/kaggle/input/mcts-solution-checkpoint/data_checkpoint.pickle'
     path_to_load_solver_checkpoint = {
         "main": 'checkpoints/solver_checkpoint_stacked' if LOCAL else '/kaggle/input/mcts-solution-checkpoint/solver_checkpoint_stacked',
+        "baseline": 'checkpoints/solver_checkpoint_stacked' if LOCAL else '/kaggle/input/mcts-solution-checkpoint/solver_checkpoint_stacked',
     }
     
     task = "regression"
@@ -78,11 +79,11 @@ class Config:
     n_openfe_features = (0, 500, 0)
     n_tf_ids_features = 0
 
-    use_oof = False
+    use_oof = True
     use_baseline_scores = False
     show_shap = False
     mask_filter = False
-    stacked = True
+    stacked = False
     
     catboost_params = {
         'iterations': 30000,
@@ -131,7 +132,7 @@ class Config:
     
     to_train = {
         "catboost": True,
-        "lgbm": False,
+        "lgbm": True,
         "xgboost": False,
     }
     
@@ -680,8 +681,8 @@ class Solver:
         oof_baseline_preds =  np.zeros([len(df)])
 
         if self.config.use_baseline_scores:
-            with open(self.config.path_to_load_solver_checkpoint["baseline"], "rb") as f:
-                baseline = pickle.load(f)["lgbm"]["oof_preds"]
+            with open(self.config.path_to_load_solver_checkpoint["baseline"] + '.pickle', "rb") as f:
+                baseline = pickle.load(f)["catboost"]["oof_baseline_preds"]
 
         if model_name == "catboost":
             feature_importances = None
@@ -948,10 +949,8 @@ class Solver:
         catcols = data_checkpoint["catcols"]
 
         if self.config.use_oof:
-            with open(self.config.path_to_load_solver_checkpoint["oof"], "rb") as f:
-                data = pickle.load(f)
-                X["oof_lgbm"] = data["lgbm"]["oof_preds"]
-                X["oof_catboost"] = data["catboost"]["oof_preds"]
+            with open(self.config.path_to_load_solver_checkpoint["baseline"] + '.pickle', "rb") as f:
+                X["oof"] = pickle.load(f)["catboost"]["oof_baseline_preds"]
             
         # Train models.
         
