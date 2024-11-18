@@ -12,6 +12,7 @@ import numpy as np
 import polars as pl
 import pandas as pd
 
+import xgboost as xgb
 import lightgbm as lgb
 from catboost import CatBoostRegressor, CatBoostClassifier, Pool
 
@@ -62,8 +63,8 @@ class Config:
     path_to_load_features = 'feature.pickle' if LOCAL else '/kaggle/input/mcts-solution-checkpoint/feature.pickle'
     path_to_tfidf = '/home/toefl/K/MCTS/dataset/tf_idf' if LOCAL else '/kaggle/input/mcts-solution-checkpoint/tf_idf'
 
-    path_to_save_data_checkpoint = 'checkpoints/data_checkpoint_lgbm_oof'     # Drop columns, categorical columns, etc.
-    path_to_save_solver_checkpoint = 'checkpoints/solver_checkpoint_lgbm_oof' # Models, weights, etc.
+    path_to_save_data_checkpoint = 'checkpoints/data_checkpoint_xgboost_5fold'     # Drop columns, categorical columns, etc.
+    path_to_save_solver_checkpoint = 'checkpoints/solver_checkpoint_xgboost_5fold' # Models, weights, etc.
 
     path_to_load_data_checkpoint = 'checkpoints/data_checkpoint.pickle' if LOCAL else '/kaggle/input/mcts-solution-checkpoint/data_checkpoint.pickle'
     path_to_load_solver_checkpoint = {
@@ -79,7 +80,7 @@ class Config:
     n_openfe_features = (0, 500, 0)
     n_tf_ids_features = 0
 
-    use_oof = True
+    use_oof = False
     use_baseline_scores = False
     show_shap = False
     mask_filter = False
@@ -120,20 +121,23 @@ class Config:
     }
 
     xgb_params = {
+        'n_estimators': 30000,
+        'learning_rate': 0.01,
+        'max_depth': 10,
         'objective': 'reg:squarederror',
-        'booster': 'gbtree',
-        'tree_method': 'auto',
-        'predictor': 'cpu_predictor',
-        'eval_metric': 'mape', 
-        'n_jobs': 8,
-        'n_estimators': 100,
-        'random_state': 0xFACED,
+        'enable_categorical': True,
+        'eval_metric': 'rmse',
+        'tree_method': 'gpu_hist',
+        'verbosity': 1,
+        'n_jobs': 14,
+        'early_stopping_rounds': 200,
+        'seed': 0xFACED,
     }
     
     to_train = {
-        "catboost": True,
-        "lgbm": True,
-        "xgboost": False,
+        "catboost": False,
+        "lgbm": False,
+        "xgboost": True,
     }
     
     weights = {
@@ -749,6 +753,9 @@ class Solver:
             elif model_name == "lgbm":
                 base_model = lgb.LGBMRegressor(**self.config.lgbm_params)
 
+            elif model_name == "xgboost":
+                base_model = xgb.XGBRegressor(**self.config.xgb_params)
+
             # Build stacked model with nested cross-validation.
 
             if self.config.stacked:
@@ -787,6 +794,8 @@ class Solver:
                                     lgb.early_stopping(self.config.catboost_params["early_stopping_rounds"]),
                                     lgb.log_evaluation(self.config.catboost_params["verbose"])
                             ])
+                        elif model_name == "xgboost":
+                            model.fit(X_train, Y_train, eval_set=[(X_valid_src, Y_valid_src)], verbose=1000)
                     
                         path_to_save = os.path.join(self.config.path_to_save_solver_checkpoint, f"inner_{model_name}_{fold}_{inner_fold}.pickle")
                         with open(path_to_save, "wb") as f:
@@ -826,14 +835,8 @@ class Solver:
                         valid_pool = Pool(X_valid_src, Y_valid_src, cat_features=catcols)
                     model.fit(train_pool, eval_set=valid_pool)
                     
-                elif model_name == "lgbm":
-                    model.fit(X_train, Y_train,
-                        eval_set=[(X_valid_src, Y_valid_src)],
-                        eval_metric='rmse',
-                        callbacks=[
-                            lgb.early_stopping(self.config.catboost_params["early_stopping_rounds"]),
-                            lgb.log_evaluation(self.config.catboost_params["verbose"])
-                    ])
+                elif model_name == "xgboost":
+                    model.fit(X_train, Y_train, eval_set=[(X_valid_src, Y_valid_src)], verbose=1000)
                 
             else:
                 path_to_load = os.path.join(self.config.path_to_load_solver_checkpoint["main"], f"main_{model_name}_{fold}.pickle")
@@ -855,6 +858,9 @@ class Solver:
                         preds = model.predict(Pool(X_valid_src, cat_features=catcols))
                         full_preds = model.predict(Pool(X_valid, cat_features=catcols))
             elif model_name == "lgbm":
+                preds = model.predict(X_valid_src)
+                full_preds = model.predict(X_valid)
+            elif model_name == "xgboost":
                 preds = model.predict(X_valid_src)
                 full_preds = model.predict(X_valid)
             
