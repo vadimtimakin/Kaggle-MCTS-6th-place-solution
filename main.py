@@ -16,11 +16,19 @@ import xgboost as xgb
 import lightgbm as lgb
 from catboost import CatBoostRegressor, CatBoostClassifier, Pool
 
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import DataLoader, TensorDataset
+
 from sklearn.base import clone
 from sklearn.metrics import mean_squared_error
-from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.model_selection import StratifiedGroupKFold
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.preprocessing import StandardScaler, OneHotEncoder, MinMaxScaler
 
+import joblib
+from tqdm import tqdm
 from typing import Tuple, Union
 from itertools import permutations, combinations
 
@@ -58,7 +66,7 @@ class Config:
     
     # Paths
     
-    path_to_train_dataset = '/home/toefl/K/MCTS/dataset/train.csv' if LOCAL else '/kaggle/input/um-game-playing-strength-of-mcts-variants/train.csv' 
+    path_to_train_dataset = '/home/toefl/K/MCTS/dataset/train.csv' if LOCAL else '/kaggle/input/um-game-playing-strength-of-mcts-variants/train.csv'
 
     path_to_load_features = 'feature.pickle' if LOCAL else '/kaggle/input/mcts-solution-checkpoint/feature.pickle'
     path_to_tfidf = '/home/toefl/K/MCTS/dataset/tf_idf' if LOCAL else '/kaggle/input/mcts-solution-checkpoint/tf_idf'
@@ -133,17 +141,27 @@ class Config:
         'early_stopping_rounds': 200,
         'seed': 0xFACED,
     }
+
+    dnn_params = {
+        "output_size": 1,
+        "epochs": 10,
+        "batch_size": 32,
+        "learning_rate": 0.001,
+        "device": "cuda",
+    }
     
     to_train = {
         "catboost": False,
         "lgbm": False,
-        "xgboost": True,
+        "xgboost": False,
+        "DNN": True,
     }
     
     weights = {
         "catboost": 1,
         "lgbm": 0,
         "xgboost": 0,
+        "DNN": 0,
     }
 
 
@@ -154,6 +172,170 @@ def set_seed(SEED):
     random.seed(SEED)
     os.environ['PYTHONHASHSEED'] = str(SEED)
     np.random.seed(SEED)
+
+
+# --- Custom DNN model ---
+
+class DNN(nn.Module):
+
+    def __init__(self, output_size=1, epochs=100, batch_size=32, learning_rate=0.001, 
+                 device='cpu', early_stopping_patience=10):
+        super(DNN, self).__init__()
+
+        self.device = device
+        self.epochs = epochs
+        self.batch_size = batch_size
+        self.learning_rate = learning_rate
+        self.early_stopping_patience = early_stopping_patience
+
+        self.output_size = output_size
+        self.embeddings = None
+        self.scaler = None
+        self.input_size = 0
+        self.cat_column_names = []  # Store categorical column names
+
+    def _build_model(self):
+        return nn.Sequential(
+            nn.Linear(self.input_size, 1024),
+            nn.BatchNorm1d(1024),
+            nn.ReLU(),
+            nn.Linear(1024, 512),
+            nn.BatchNorm1d(512),
+            nn.ReLU(),
+            nn.Linear(512, 256),
+            nn.BatchNorm1d(256),
+            nn.ReLU(),
+            nn.Linear(256, 128),
+            nn.BatchNorm1d(128),
+            nn.ReLU(),
+            nn.Linear(128, self.output_size)
+        ).to(self.device)
+        
+    def forward(self, x_num, x_cat):
+        # Processing through embeddings
+        embeddings = [emb(x_cat[:, i]) for i, emb in enumerate(self.embeddings)]
+        x_embed = torch.cat(embeddings, dim=1)
+
+        # Now put together the numeric and embedded categorical data
+        x = torch.cat([x_num, x_embed], dim=1)
+        return self.model(x)
+
+    def fit(self, X_train, Y_train, X_val, Y_val):
+        if isinstance(X_train, pd.DataFrame) and isinstance(X_val, pd.DataFrame):
+            # Automatically determine categorical and numeric columns
+            self.cat_column_names = X_train.select_dtypes(include=['object', 'category']).columns.tolist()
+            num_columns = X_train.select_dtypes(exclude=['object', 'category']).columns.tolist()
+
+            # Build categorical dimensions and embedding dimensions
+            categorical_dims = [X_train[col].nunique() for col in self.cat_column_names]
+            embedding_dims = [min(50, (dim + 1) // 2) for dim in categorical_dims]
+            
+            self.embeddings = nn.ModuleList(
+                [nn.Embedding(dim, embed_dim) for dim, embed_dim in zip(categorical_dims, embedding_dims)]
+            ).to(self.device)
+
+            self.input_size = sum(embedding_dims) + len(num_columns)  # Add numeric columns to input size
+            self.model = self._build_model()  # Build the model
+
+            # Process numeric columns
+            X_train_num = X_train[num_columns].values
+            X_val_num = X_val[num_columns].values
+
+            # Scale numeric data
+            self.scaler = StandardScaler()
+            self.scaler.fit(X_train_num)
+            X_train_num_scaled = torch.tensor(self.scaler.transform(X_train_num)).float().to(self.device)
+            X_val_num_scaled = torch.tensor(self.scaler.transform(X_val_num)).float().to(self.device)
+
+            # Process categorical columns
+            X_train_cat = X_train[self.cat_column_names].astype('category').apply(lambda x: x.cat.codes)
+            X_val_cat = X_val[self.cat_column_names].astype('category').apply(lambda x: x.cat.codes)
+            X_train_cat_tensor = torch.tensor(X_train_cat.values).long().to(self.device)
+            X_val_cat_tensor = torch.tensor(X_val_cat.values).long().to(self.device)
+
+            Y_train_tensor = torch.tensor(Y_train.values).float().to(self.device)
+            Y_val_tensor = torch.tensor(Y_val.values).float().to(self.device)
+
+            train_dataset = TensorDataset(X_train_num_scaled, X_train_cat_tensor, Y_train_tensor)
+            train_loader = DataLoader(train_dataset, batch_size=self.batch_size, shuffle=True)
+
+            val_dataset = TensorDataset(X_val_num_scaled, X_val_cat_tensor, Y_val_tensor)
+            val_loader = DataLoader(val_dataset, batch_size=self.batch_size, shuffle=False)
+
+            criterion = nn.MSELoss()
+            optimizer = optim.Adam(self.parameters(), lr=self.learning_rate)
+
+            best_val_loss = np.inf
+            patience_counter = 0
+
+            pbar = tqdm(range(self.epochs), desc='Training', unit='epoch')
+            
+            for epoch in pbar:
+                self.train()
+                for batch_X_num, batch_X_cat, batch_Y in train_loader:
+                    optimizer.zero_grad()
+                    outputs = self.forward(batch_X_num, batch_X_cat)
+                    loss = criterion(outputs, batch_Y)
+                    loss.backward()
+                    optimizer.step()
+
+                self.eval()
+                val_loss = 0.0
+                with torch.no_grad():
+                    for batch_X_num, batch_X_cat, batch_Y in val_loader:
+                        outputs = self.forward(batch_X_num, batch_X_cat)
+                        loss = criterion(outputs, batch_Y)
+                        val_loss += loss.item()
+                        
+                val_loss /= len(val_loader)
+                pbar.set_postfix({'Best Val Loss': best_val_loss, 'Epoch Val Loss': val_loss})
+
+                if val_loss < best_val_loss:
+                    best_val_loss = val_loss
+                    patience_counter = 0
+                    self.best_model_state = self.state_dict()
+                else:
+                    patience_counter += 1
+                
+                if patience_counter >= self.early_stopping_patience:
+                    break
+        else:
+            raise ValueError("X_train and X_val must be pandas DataFrames")
+
+    def predict(self, X):
+        self.eval()
+        if isinstance(X, pd.DataFrame):
+            # Process numeric columns
+            num_columns = X.select_dtypes(exclude=['object', 'category']).columns
+            X_num = X[num_columns].values
+            X_num_scaled = self.scaler.transform(X_num).astype(np.float32)
+
+            # Process categorical columns
+            X_cat = X[self.cat_column_names].astype('category').apply(lambda x: x.cat.codes).values
+            
+            X_num_tensor = torch.tensor(X_num_scaled).float().to(self.device)
+            X_cat_tensor = torch.tensor(X_cat).long().to(self.device)
+
+            with torch.no_grad():
+                predictions = self.forward(X_num_tensor, X_cat_tensor)
+        
+        return predictions.cpu().numpy()
+
+    def save(self, file_path):
+        checkpoint = {
+            'model_state_dict': self.state_dict(),
+            'scaler': self.scaler,
+            'categorical_dims': [embedding.embedding_dim for embedding in self.embeddings],
+            'embedding_dims': self.input_size
+        }
+        joblib.dump(checkpoint, file_path)
+
+    def load(self, file_path):
+        checkpoint = joblib.load(file_path)
+        self.load_state_dict(checkpoint['model_state_dict'])
+        self.scaler = checkpoint['scaler']
+        self.embeddings = nn.ModuleList([nn.Embedding(dim, embed_dim) for dim, embed_dim in zip(checkpoint['categorical_dims'], checkpoint['embedding_dims'])])
+        self.eval()
 
 
 # --- Data pipeline ---
@@ -756,6 +938,9 @@ class Solver:
             elif model_name == "xgboost":
                 base_model = xgb.XGBRegressor(**self.config.xgb_params)
 
+            elif model_name == "DNN":
+                base_model = DNN(**self.config.dnn_params)
+
             # Build stacked model with nested cross-validation.
 
             if self.config.stacked:
@@ -787,15 +972,17 @@ class Solver:
                             model.set_params(random_seed=58)
                             model.fit(X_tr_inner, y_tr_inner, eval_set=(X_va_inner, y_va_inner))
                         elif model_name == "lgbm":
-                            model.fit(X_train, Y_train,
-                                eval_set=[(X_valid_src, Y_valid_src)],
+                            model.fit(X_tr_inner, y_tr_inner,
+                                eval_set=[(X_va_inner, y_va_inner)],
                                 eval_metric='rmse',
                                 callbacks=[
                                     lgb.early_stopping(self.config.catboost_params["early_stopping_rounds"]),
                                     lgb.log_evaluation(self.config.catboost_params["verbose"])
                             ])
                         elif model_name == "xgboost":
-                            model.fit(X_train, Y_train, eval_set=[(X_valid_src, Y_valid_src)], verbose=1000)
+                            model.fit(X_tr_inner, y_tr_inner, eval_set=[(X_va_inner, y_va_inner)], verbose=1000)
+                        elif model_name == "DNN":
+                            model.fit(X_tr_inner, y_tr_inner, X_va_inner, y_va_inner)
                     
                         path_to_save = os.path.join(self.config.path_to_save_solver_checkpoint, f"inner_{model_name}_{fold}_{inner_fold}.pickle")
                         with open(path_to_save, "wb") as f:
@@ -837,6 +1024,9 @@ class Solver:
                     
                 elif model_name == "xgboost":
                     model.fit(X_train, Y_train, eval_set=[(X_valid_src, Y_valid_src)], verbose=1000)
+
+                elif model_name == "DNN":
+                    model.fit(X_train, Y_train, X_valid_src, Y_valid_src)
                 
             else:
                 path_to_load = os.path.join(self.config.path_to_load_solver_checkpoint["main"], f"main_{model_name}_{fold}.pickle")
@@ -861,6 +1051,9 @@ class Solver:
                 preds = model.predict(X_valid_src)
                 full_preds = model.predict(X_valid)
             elif model_name == "xgboost":
+                preds = model.predict(X_valid_src)
+                full_preds = model.predict(X_valid)
+            elif model_name == "DNN":
                 preds = model.predict(X_valid_src)
                 full_preds = model.predict(X_valid)
             
