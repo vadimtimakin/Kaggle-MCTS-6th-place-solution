@@ -19,13 +19,14 @@ from catboost import CatBoostRegressor, CatBoostClassifier, Pool
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import torch.nn.functional as F
 from torch.utils.data import DataLoader, TensorDataset
 
 from sklearn.base import clone
 from sklearn.metrics import mean_squared_error
 from sklearn.model_selection import StratifiedGroupKFold
 from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.preprocessing import StandardScaler, OneHotEncoder, MinMaxScaler
+from sklearn.preprocessing import StandardScaler, OneHotEncoder, QuantileTransformer
 
 import joblib
 from tqdm import tqdm
@@ -74,11 +75,14 @@ class Config:
     path_to_save_data_checkpoint = 'checkpoints/data_checkpoint_xgboost_5fold'     # Drop columns, categorical columns, etc.
     path_to_save_solver_checkpoint = 'checkpoints/solver_checkpoint_xgboost_5fold' # Models, weights, etc.
 
-    path_to_load_data_checkpoint = 'checkpoints/data_checkpoint.pickle' if LOCAL else '/kaggle/input/mcts-solution-checkpoint/data_checkpoint.pickle'
+    path_to_load_data_checkpoint = 'checkpoints/data_checkpoint_xgboost_5fold' if LOCAL else '/kaggle/input/mcts-solution-checkpoint/data_checkpoint.pickle'
     path_to_load_solver_checkpoint = {
         "main": 'checkpoints/solver_checkpoint_stacked' if LOCAL else '/kaggle/input/mcts-solution-checkpoint/solver_checkpoint_stacked',
         "baseline": 'checkpoints/solver_checkpoint_stacked' if LOCAL else '/kaggle/input/mcts-solution-checkpoint/solver_checkpoint_stacked',
     }
+
+    path_to_save_dataset = 'checkpoints/dataset.csv'
+    load_dataset_checkpoint = True
     
     task = "regression"
     
@@ -144,8 +148,8 @@ class Config:
 
     dnn_params = {
         "output_size": 1,
-        "epochs": 10,
-        "batch_size": 32,
+        "epochs": 100,
+        "batch_size": 1024,
         "learning_rate": 0.001,
         "device": "cuda",
     }
@@ -212,29 +216,29 @@ class DNN(nn.Module):
         ).to(self.device)
         
     def forward(self, x_num, x_cat):
-        # Processing through embeddings
-        embeddings = [emb(x_cat[:, i]) for i, emb in enumerate(self.embeddings)]
-        x_embed = torch.cat(embeddings, dim=1)
-
-        # Now put together the numeric and embedded categorical data
+        # Process through the single embedding layer
+        x_embed = self.embedding_layer(x_cat)  # Apply embedding
+        x_embed = x_embed.view(x_embed.size(0), -1)  # Reshape to 2D (flatten embeddings)
+        
+        # Concatenate numeric and embedded categorical data
         x = torch.cat([x_num, x_embed], dim=1)
         return self.model(x)
 
     def fit(self, X_train, Y_train, X_val, Y_val):
         if isinstance(X_train, pd.DataFrame) and isinstance(X_val, pd.DataFrame):
-            # Automatically determine categorical and numeric columns
+           # Automatically determine categorical and numeric columns
             self.cat_column_names = X_train.select_dtypes(include=['object', 'category']).columns.tolist()
             num_columns = X_train.select_dtypes(exclude=['object', 'category']).columns.tolist()
 
-            # Build categorical dimensions and embedding dimensions
+            # Build embedding dimensions based on categorical unique values
             categorical_dims = [X_train[col].nunique() for col in self.cat_column_names]
-            embedding_dims = [min(50, (dim + 1) // 2) for dim in categorical_dims]
-            
-            self.embeddings = nn.ModuleList(
-                [nn.Embedding(dim, embed_dim) for dim, embed_dim in zip(categorical_dims, embedding_dims)]
-            ).to(self.device)
+            embedding_dim = 128
 
-            self.input_size = sum(embedding_dims) + len(num_columns)  # Add numeric columns to input size
+            # Define a single embedding layer capable of handling all categorical features
+            embedding_input_dim = sum(categorical_dims)  # Sum of distinct values across features
+            self.embedding_layer = nn.EmbeddingBag(embedding_input_dim, embedding_dim, mode='sum').to(self.device)
+
+            self.input_size = embedding_dim + len(num_columns)
             self.model = self._build_model()  # Build the model
 
             # Process numeric columns
@@ -242,7 +246,7 @@ class DNN(nn.Module):
             X_val_num = X_val[num_columns].values
 
             # Scale numeric data
-            self.scaler = StandardScaler()
+            self.scaler = QuantileTransformer()
             self.scaler.fit(X_train_num)
             X_train_num_scaled = torch.tensor(self.scaler.transform(X_train_num)).float().to(self.device)
             X_val_num_scaled = torch.tensor(self.scaler.transform(X_val_num)).float().to(self.device)
@@ -253,8 +257,8 @@ class DNN(nn.Module):
             X_train_cat_tensor = torch.tensor(X_train_cat.values).long().to(self.device)
             X_val_cat_tensor = torch.tensor(X_val_cat.values).long().to(self.device)
 
-            Y_train_tensor = torch.tensor(Y_train.values).float().to(self.device)
-            Y_val_tensor = torch.tensor(Y_val.values).float().to(self.device)
+            Y_train_tensor = torch.tensor(Y_train.values).float().to(self.device).unsqueeze(-1)
+            Y_val_tensor = torch.tensor(Y_val.values).float().to(self.device).unsqueeze(-1)
 
             train_dataset = TensorDataset(X_train_num_scaled, X_train_cat_tensor, Y_train_tensor)
             train_loader = DataLoader(train_dataset, batch_size=self.batch_size, shuffle=True)
@@ -262,34 +266,66 @@ class DNN(nn.Module):
             val_dataset = TensorDataset(X_val_num_scaled, X_val_cat_tensor, Y_val_tensor)
             val_loader = DataLoader(val_dataset, batch_size=self.batch_size, shuffle=False)
 
-            criterion = nn.MSELoss()
+            criterion = lambda outputs, targets: torch.sqrt(nn.MSELoss()(outputs, targets))
             optimizer = optim.Adam(self.parameters(), lr=self.learning_rate)
+            scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=self.epochs, eta_min=1e-8)
 
             best_val_loss = np.inf
             patience_counter = 0
 
-            pbar = tqdm(range(self.epochs), desc='Training', unit='epoch')
-            
-            for epoch in pbar:
+            for epoch in range(self.epochs):
+                print(f"\n**Epoch {epoch + 1}/{self.epochs}**")
+                
+                # Training Loop
+                print("Training")
                 self.train()
-                for batch_X_num, batch_X_cat, batch_Y in train_loader:
+                train_loss = 0.0
+                train_batches = tqdm(train_loader, desc="Train Batches", leave=False)  # Progress per batch
+                for batch_idx, (batch_X_num, batch_X_cat, batch_Y) in enumerate(train_batches):
                     optimizer.zero_grad()
                     outputs = self.forward(batch_X_num, batch_X_cat)
                     loss = criterion(outputs, batch_Y)
                     loss.backward()
                     optimizer.step()
 
+                    train_loss += loss.item()
+                    
+                    # Update progress bar with current batch loss
+                    train_batches.set_postfix({'Current Train Loss': loss.item()})
+                
+                train_loss /= len(train_loader)
+                print(f"Training Loss: {train_loss:.4f}")
+                
+                # Validation Loop
+                print("**Validation:**")
                 self.eval()
                 val_loss = 0.0
+                all_preds = []
+                all_labels = []
+                val_batches = tqdm(val_loader, desc="Val Batches", leave=False)  # Progress per batch
+
                 with torch.no_grad():
-                    for batch_X_num, batch_X_cat, batch_Y in val_loader:
+                    for batch_idx, (batch_X_num, batch_X_cat, batch_Y) in enumerate(val_batches):
                         outputs = self.forward(batch_X_num, batch_X_cat)
                         loss = criterion(outputs, batch_Y)
                         val_loss += loss.item()
-                        
-                val_loss /= len(val_loader)
-                pbar.set_postfix({'Best Val Loss': best_val_loss, 'Epoch Val Loss': val_loss})
 
+                        # Collect predictions and labels for macro metrics
+                        all_preds.append(outputs.cpu().numpy())
+                        all_labels.append(batch_Y.cpu().numpy())
+                        
+                        # Update progress bar with current batch loss
+                        val_batches.set_postfix({'Current Val Loss': loss.item()})
+                
+                val_loss /= len(val_loader)
+
+                # Calculate RMSE (macro metric)
+                all_preds = np.concatenate(all_preds)
+                all_labels = np.concatenate(all_labels)
+                val_rmse = mean_squared_error(all_labels, all_preds, squared=False)
+                print(f"Validation Loss: {val_loss:.4f}, Validation RMSE: {val_rmse:.4f}")
+                
+                # Early Stopping Logic
                 if val_loss < best_val_loss:
                     best_val_loss = val_loss
                     patience_counter = 0
@@ -297,29 +333,34 @@ class DNN(nn.Module):
                 else:
                     patience_counter += 1
                 
+                # Stop training if patience limit reached
                 if patience_counter >= self.early_stopping_patience:
                     break
+                
+                # Scheduler step
+                scheduler.step()
         else:
             raise ValueError("X_train and X_val must be pandas DataFrames")
 
     def predict(self, X):
         self.eval()
-        if isinstance(X, pd.DataFrame):
-            # Process numeric columns
-            num_columns = X.select_dtypes(exclude=['object', 'category']).columns
-            X_num = X[num_columns].values
-            X_num_scaled = self.scaler.transform(X_num).astype(np.float32)
+        with torch.no_grad():
+            # Process numeric and categorical data
+            X_num = X.select_dtypes(exclude=['object', 'category']).values
+            X_num_scaled = torch.tensor(self.scaler.transform(X_num)).float().to(self.device)
 
-            # Process categorical columns
             X_cat = X[self.cat_column_names].astype('category').apply(lambda x: x.cat.codes).values
-            
-            X_num_tensor = torch.tensor(X_num_scaled).float().to(self.device)
             X_cat_tensor = torch.tensor(X_cat).long().to(self.device)
 
-            with torch.no_grad():
-                predictions = self.forward(X_num_tensor, X_cat_tensor)
-        
-        return predictions.cpu().numpy()
+            dataset = TensorDataset(X_num_scaled, X_cat_tensor)
+            data_loader = DataLoader(dataset, batch_size=self.batch_size, shuffle=False)
+
+            predictions = []
+            print('Prediction')
+            for X_num_batch, X_cat_batch in tqdm(data_loader):
+                preds = self.forward(X_num_batch, X_cat_batch)
+                predictions.append(preds.cpu().numpy())
+            return np.squeeze(np.vstack(predictions))
 
     def save(self, file_path):
         checkpoint = {
@@ -785,24 +826,32 @@ class Dataset:
 
         return df
     
-    def save_data_checkpoint(self) -> None:
+    def save_data_checkpoint(self, df: pd.DataFrame) -> None:
         """Save data checkpoint."""
         
         if self.config.is_train:
             with open(self.config.path_to_save_data_checkpoint, "wb") as f:
                 pickle.dump(self.data_checkpoint, f)
+
+            df.to_csv(self.config.path_to_save_dataset, index=False)
         
-    
     def get_dataset(self, df: pl.DataFrame) -> Tuple[pd.DataFrame, list]:
         """Get the dataset."""
-        
-        df = self.preprocessing(df)
-        df = self.feature_generation(df)
-        df = self.build_validation_and_cv_features(df)
-        df = self.drop_columns(df)
-        df = self.postprocessing(df)
-        df = self.reduce_mem_usage(df)
-        self.save_data_checkpoint()
+
+        if self.config.is_train and self.config.load_dataset_checkpoint:
+            print("Loading the dataset from the checkpoint...")
+            df = pd.read_csv(self.config.path_to_save_dataset)
+            with open(self.config.path_to_load_data_checkpoint, "rb") as f:
+                self.data_checkpoint = pickle.load(f)
+
+        else:
+            df = self.preprocessing(df)
+            df = self.feature_generation(df)
+            df = self.build_validation_and_cv_features(df)
+            df = self.drop_columns(df)
+            df = self.postprocessing(df)
+            df = self.reduce_mem_usage(df)
+            self.save_data_checkpoint(df)
         
         return df, self.data_checkpoint
     
