@@ -148,7 +148,7 @@ class Config:
 
     dnn_params = {
         "output_size": 1,
-        "epochs": 100,
+        "epochs": 10,
         "batch_size": 1024,
         "learning_rate": 0.001,
         "device": "cuda",
@@ -176,6 +176,10 @@ def set_seed(SEED):
     random.seed(SEED)
     os.environ['PYTHONHASHSEED'] = str(SEED)
     np.random.seed(SEED)
+    torch.manual_seed(SEED)
+    torch.cuda.manual_seed(SEED)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
 
 # --- Custom DNN model ---
@@ -196,7 +200,7 @@ class DNN(nn.Module):
         self.embeddings = None
         self.scaler = None
         self.input_size = 0
-        self.cat_column_names = []  # Store categorical column names
+        self.cat_column_names = []
 
     def _build_model(self):
         return nn.Sequential(
@@ -216,42 +220,36 @@ class DNN(nn.Module):
         ).to(self.device)
         
     def forward(self, x_num, x_cat):
-        # Process through the single embedding layer
-        x_embed = self.embedding_layer(x_cat)  # Apply embedding
-        x_embed = x_embed.view(x_embed.size(0), -1)  # Reshape to 2D (flatten embeddings)
+        x_embed = self.embedding_layer(x_cat)  
+        x_embed = x_embed.view(x_embed.size(0), -1) 
         
-        # Concatenate numeric and embedded categorical data
         x = torch.cat([x_num, x_embed], dim=1)
+
         return self.model(x)
 
     def fit(self, X_train, Y_train, X_val, Y_val):
         if isinstance(X_train, pd.DataFrame) and isinstance(X_val, pd.DataFrame):
-           # Automatically determine categorical and numeric columns
+           
             self.cat_column_names = X_train.select_dtypes(include=['object', 'category']).columns.tolist()
             num_columns = X_train.select_dtypes(exclude=['object', 'category']).columns.tolist()
 
-            # Build embedding dimensions based on categorical unique values
             categorical_dims = [X_train[col].nunique() for col in self.cat_column_names]
-            embedding_dim = 128
+            embedding_dim = 256
 
-            # Define a single embedding layer capable of handling all categorical features
-            embedding_input_dim = sum(categorical_dims)  # Sum of distinct values across features
+            embedding_input_dim = sum(categorical_dims)
             self.embedding_layer = nn.EmbeddingBag(embedding_input_dim, embedding_dim, mode='sum').to(self.device)
 
             self.input_size = embedding_dim + len(num_columns)
-            self.model = self._build_model()  # Build the model
+            self.model = self._build_model() 
 
-            # Process numeric columns
             X_train_num = X_train[num_columns].values
             X_val_num = X_val[num_columns].values
 
-            # Scale numeric data
             self.scaler = QuantileTransformer()
             self.scaler.fit(X_train_num)
             X_train_num_scaled = torch.tensor(self.scaler.transform(X_train_num)).float().to(self.device)
             X_val_num_scaled = torch.tensor(self.scaler.transform(X_val_num)).float().to(self.device)
 
-            # Process categorical columns
             X_train_cat = X_train[self.cat_column_names].astype('category').apply(lambda x: x.cat.codes)
             X_val_cat = X_val[self.cat_column_names].astype('category').apply(lambda x: x.cat.codes)
             X_train_cat_tensor = torch.tensor(X_train_cat.values).long().to(self.device)
@@ -274,13 +272,11 @@ class DNN(nn.Module):
             patience_counter = 0
 
             for epoch in range(self.epochs):
-                print(f"\n**Epoch {epoch + 1}/{self.epochs}**")
+                print(f"\nEpoch {epoch + 1}/{self.epochs}", end=' | ')
                 
-                # Training Loop
-                print("Training")
                 self.train()
                 train_loss = 0.0
-                train_batches = tqdm(train_loader, desc="Train Batches", leave=False)  # Progress per batch
+                train_batches = tqdm(train_loader, desc="Train Batches", leave=False) 
                 for batch_idx, (batch_X_num, batch_X_cat, batch_Y) in enumerate(train_batches):
                     optimizer.zero_grad()
                     outputs = self.forward(batch_X_num, batch_X_cat)
@@ -290,19 +286,16 @@ class DNN(nn.Module):
 
                     train_loss += loss.item()
                     
-                    # Update progress bar with current batch loss
                     train_batches.set_postfix({'Current Train Loss': loss.item()})
                 
                 train_loss /= len(train_loader)
-                print(f"Training Loss: {train_loss:.4f}")
+                print(f"Training Loss: {train_loss:.4f}", end=' ')
                 
-                # Validation Loop
-                print("**Validation:**")
                 self.eval()
                 val_loss = 0.0
                 all_preds = []
                 all_labels = []
-                val_batches = tqdm(val_loader, desc="Val Batches", leave=False)  # Progress per batch
+                val_batches = tqdm(val_loader, desc="Val Batches", leave=False) 
 
                 with torch.no_grad():
                     for batch_idx, (batch_X_num, batch_X_cat, batch_Y) in enumerate(val_batches):
@@ -310,42 +303,37 @@ class DNN(nn.Module):
                         loss = criterion(outputs, batch_Y)
                         val_loss += loss.item()
 
-                        # Collect predictions and labels for macro metrics
                         all_preds.append(outputs.cpu().numpy())
                         all_labels.append(batch_Y.cpu().numpy())
-                        
-                        # Update progress bar with current batch loss
+
                         val_batches.set_postfix({'Current Val Loss': loss.item()})
                 
                 val_loss /= len(val_loader)
 
-                # Calculate RMSE (macro metric)
                 all_preds = np.concatenate(all_preds)
                 all_labels = np.concatenate(all_labels)
                 val_rmse = mean_squared_error(all_labels, all_preds, squared=False)
                 print(f"Validation Loss: {val_loss:.4f}, Validation RMSE: {val_rmse:.4f}")
                 
-                # Early Stopping Logic
                 if val_loss < best_val_loss:
                     best_val_loss = val_loss
                     patience_counter = 0
                     self.best_model_state = self.state_dict()
                 else:
                     patience_counter += 1
-                
-                # Stop training if patience limit reached
+
                 if patience_counter >= self.early_stopping_patience:
                     break
                 
-                # Scheduler step
                 scheduler.step()
+
+            self.save('checkpoints/tmp.pt')
         else:
             raise ValueError("X_train and X_val must be pandas DataFrames")
 
     def predict(self, X):
         self.eval()
         with torch.no_grad():
-            # Process numeric and categorical data
             X_num = X.select_dtypes(exclude=['object', 'category']).values
             X_num_scaled = torch.tensor(self.scaler.transform(X_num)).float().to(self.device)
 
@@ -364,10 +352,8 @@ class DNN(nn.Module):
 
     def save(self, file_path):
         checkpoint = {
-            'model_state_dict': self.state_dict(),
+            'model_state_dict': self.best_model_state,
             'scaler': self.scaler,
-            'categorical_dims': [embedding.embedding_dim for embedding in self.embeddings],
-            'embedding_dims': self.input_size
         }
         joblib.dump(checkpoint, file_path)
 
@@ -375,8 +361,6 @@ class DNN(nn.Module):
         checkpoint = joblib.load(file_path)
         self.load_state_dict(checkpoint['model_state_dict'])
         self.scaler = checkpoint['scaler']
-        self.embeddings = nn.ModuleList([nn.Embedding(dim, embed_dim) for dim, embed_dim in zip(checkpoint['categorical_dims'], checkpoint['embedding_dims'])])
-        self.eval()
 
 
 # --- Data pipeline ---
