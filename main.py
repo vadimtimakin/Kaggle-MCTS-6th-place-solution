@@ -56,7 +56,7 @@ warnings.filterwarnings('ignore')
 
 IS_TRAIN = True
 LOCAL = True
-IS_RERUN = False
+IS_RERUN = True
 
 
 # --- Config ---
@@ -84,7 +84,7 @@ class Config:
 
     path_to_load_data_checkpoint = 'checkpoints/data_checkpoint_xgboost_5fold' if LOCAL else '/kaggle/input/mcts-solution-checkpoint/data_checkpoint.pickle'
     path_to_load_solver_checkpoint = {
-        "main": 'checkpoints/solver_checkpoint_stacked' if LOCAL else '/kaggle/input/mcts-solution-checkpoint/solver_checkpoint_stacked',
+        "main": 'checkpoints/solver_checkpoint_xgboost_5fold' if LOCAL else '/kaggle/input/mcts-solution-checkpoint/solver_checkpoint_stacked',
         "baseline": 'checkpoints/solver_checkpoint_stacked' if LOCAL else '/kaggle/input/mcts-solution-checkpoint/solver_checkpoint_stacked',
     }
 
@@ -167,7 +167,7 @@ class Config:
         "catboost": False,
         "lgbm": False,
         "xgboost": False,
-        "DNN": False,
+        "DNN": True,
     }
     
     weights = {
@@ -377,11 +377,12 @@ class DNN(nn.Module):
             
             scheduler.step()
 
+        self.load('checkpoints/tmp.pt')
+
     def predict(self, X: pd.DataFrame):
         """Inference."""
 
         self.eval()
-        self.load('checkpoints/tmp.pt')
 
         with torch.no_grad():
             X_num = X[self.num_columns]
@@ -877,9 +878,15 @@ class Dataset:
 
         if self.config.is_train and self.config.load_dataset_checkpoint:
             print("Loading the dataset from the checkpoint...")
+
             df = pd.read_csv(self.config.path_to_save_dataset)
+
             with open(self.config.path_to_load_data_checkpoint, "rb") as f:
                 self.data_checkpoint = pickle.load(f)
+
+            cat_cols = self.data_checkpoint["catcols"] + ["data_mode", "GameRulesetName"]
+            cat_mapping = {f: "category" if f in cat_cols else float for f in df.columns}
+            df = df.astype(cat_mapping)
 
         else:
             df = self.preprocessing(df)
