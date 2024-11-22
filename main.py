@@ -158,14 +158,16 @@ class Config:
         "epochs": 20,
         "batch_size": 1024,
         "learning_rate": 0.003,
+        "embedding_size": 128,
         "device": "cuda",
+        "early_stopping_patience": 10,
     }
     
     to_train = {
         "catboost": False,
         "lgbm": False,
         "xgboost": False,
-        "DNN": True,
+        "DNN": False,
     }
     
     weights = {
@@ -194,28 +196,30 @@ def set_seed(SEED):
 class DNN(nn.Module):
 
     def __init__(self, output_size=1, epochs=100, batch_size=32, learning_rate=0.001, 
-                 device='cpu', early_stopping_patience=10):
+                 embedding_size=128, device='cpu', early_stopping_patience=10):
         super(DNN, self).__init__()
 
         self.device = device
         self.epochs = epochs
         self.batch_size = batch_size
         self.learning_rate = learning_rate
+        self.embedding_size = embedding_size
         self.early_stopping_patience = early_stopping_patience
 
         self.output_size = output_size
         self.embeddings = None
         self.scaler = None
-        self.cat_scaler = None
         self.input_size = 0
         self.cat_column_names = []
 
     def _build_model(self):
+        """Build model for the custom input size."""
+
         num_numerical_features = len(self.num_columns)
 
-        self.embedding_mlp = nn.Embedding(sum(self.field_dims), 128)
+        self.embedding_mlp = nn.Embedding(sum(self.field_dims), self.embedding_size)
 
-        input_dim = (len(self.field_dims) * 128) + num_numerical_features  
+        input_dim = (len(self.field_dims) * self.embedding_size) + num_numerical_features  
         print("DNN input_dim |", input_dim)
 
         self.mlp = nn.Sequential(
@@ -247,127 +251,140 @@ class DNN(nn.Module):
         )
 
     def forward(self, x_num, x_cat):
-       
+        """Forward function."""
+
         mlp_embed_x = self.embedding_mlp(x_cat)
         mlp_x = torch.cat([mlp_embed_x.view(mlp_embed_x.size(0), -1), x_num], dim=1)
         mlp_out = self.mlp(mlp_x)
 
         return mlp_out
 
-    def fit(self, X_train, Y_train, X_val, Y_val):
-        if isinstance(X_train, pd.DataFrame) and isinstance(X_val, pd.DataFrame):
+    def fit(self, X_train: pd.DataFrame, Y_train: pd.DataFrame, X_val: pd.DataFrame, Y_val: pd.DataFrame):
+        """Training."""
            
-            self.cat_column_names = X_train.select_dtypes(include=['object', 'category']).columns.tolist()
-            self.num_columns = X_train.select_dtypes(exclude=['object', 'category']).columns.tolist()
-            self.field_dims = [X_train[col].nunique() for col in self.cat_column_names]
+        # Distinct categorical and numerical columns.
 
-            self._build_model() 
-            self.to(self.device)
+        self.cat_column_names = X_train.select_dtypes(include=['object', 'category']).columns.tolist()
+        self.num_columns = X_train.select_dtypes(exclude=['object', 'category']).columns.tolist()
+        self.field_dims = [X_train[col].nunique() for col in self.cat_column_names]
 
-            X_train_num = X_train[self.num_columns]
-            X_val_num = X_val[self.num_columns]
+        X_train_num = X_train[self.num_columns]
+        X_val_num = X_val[self.num_columns]
 
-            self.scaler = QuantileTransformer()
-            self.scaler.fit(X_train_num.drop(["oof"], axis=1).values)
+        # Build the model.
 
-            X_train_num_scaled = torch.tensor(np.concatenate([self.scaler.transform(X_train_num.drop(["oof"], axis=1).values), np.expand_dims(X_train_num["oof"].values, axis=1)], axis=1)).float().to(self.device)
-            X_val_num_scaled = torch.tensor(np.concatenate([self.scaler.transform(X_val_num.drop(["oof"], axis=1).values), np.expand_dims(X_val_num["oof"].values, axis=1)], axis=1)).float().to(self.device)
+        self._build_model() 
+        self.to(self.device)
 
-            X_train_cat = X_train[self.cat_column_names].astype('category').apply(lambda x: x.cat.codes)
-            X_val_cat = X_val[self.cat_column_names].astype('category').apply(lambda x: x.cat.codes)
+        # Process numerical columns using quantile transformer for all features except the OOF one.
 
-            X_train_cat_tensor = torch.tensor(X_train_cat.values).long().to(self.device)
-            X_val_cat_tensor = torch.tensor(X_val_cat.values).long().to(self.device)
+        self.scaler = QuantileTransformer()
+        self.scaler.fit(X_train_num.drop(["oof"], axis=1).values)
 
-            Y_train_tensor = torch.tensor(Y_train.values).float().to(self.device).unsqueeze(-1)
-            Y_val_tensor = torch.tensor(Y_val.values).float().to(self.device).unsqueeze(-1)
+        X_train_num_scaled = torch.tensor(np.concatenate([self.scaler.transform(X_train_num.drop(["oof"], axis=1).values), np.expand_dims(X_train_num["oof"].values, axis=1)], axis=1)).float().to(self.device)
+        X_val_num_scaled = torch.tensor(np.concatenate([self.scaler.transform(X_val_num.drop(["oof"], axis=1).values), np.expand_dims(X_val_num["oof"].values, axis=1)], axis=1)).float().to(self.device)
 
-            train_dataset = TensorDataset(X_train_num_scaled, X_train_cat_tensor, Y_train_tensor)
-            train_loader = DataLoader(train_dataset, batch_size=self.batch_size, shuffle=True)
+        # Process categorical columns.
 
-            val_dataset = TensorDataset(X_val_num_scaled, X_val_cat_tensor, Y_val_tensor)
-            val_loader = DataLoader(val_dataset, batch_size=self.batch_size, shuffle=False)
+        X_train_cat = X_train[self.cat_column_names].astype('category').apply(lambda x: x.cat.codes)
+        X_val_cat = X_val[self.cat_column_names].astype('category').apply(lambda x: x.cat.codes)
 
-            criterion = lambda outputs, targets: torch.sqrt(nn.MSELoss()(outputs, targets))
-            optimizer = MADGRAD(self.parameters(), lr=self.learning_rate)
-            scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=self.epochs, eta_min=1e-8)
+        X_train_cat_tensor = torch.tensor(X_train_cat.values).long().to(self.device)
+        X_val_cat_tensor = torch.tensor(X_val_cat.values).long().to(self.device)
 
-            scaler = GradScaler()
+        # Create object for training.
 
-            best_val_loss = np.inf
-            patience_counter = 0
+        Y_train_tensor = torch.tensor(Y_train.values).float().to(self.device).unsqueeze(-1)
+        Y_val_tensor = torch.tensor(Y_val.values).float().to(self.device).unsqueeze(-1)
 
-            for epoch in range(self.epochs):
-                print(f"\nEpoch {epoch + 1}/{self.epochs}")
+        train_dataset = TensorDataset(X_train_num_scaled, X_train_cat_tensor, Y_train_tensor)
+        train_loader = DataLoader(train_dataset, batch_size=self.batch_size, shuffle=True)
+
+        val_dataset = TensorDataset(X_val_num_scaled, X_val_cat_tensor, Y_val_tensor)
+        val_loader = DataLoader(val_dataset, batch_size=self.batch_size, shuffle=False)
+
+        criterion = lambda outputs, targets: torch.sqrt(nn.MSELoss()(outputs, targets))
+        optimizer = MADGRAD(self.parameters(), lr=self.learning_rate)
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=self.epochs, eta_min=1e-8)
+
+        scaler = GradScaler()
+
+        best_val_loss = np.inf
+        patience_counter = 0
+
+        # Train loop.
+
+        for epoch in range(self.epochs):
+            print(f"\nEpoch {epoch + 1}/{self.epochs}")
+            
+            self.train()
+            train_loss = 0.0
+            train_batches = tqdm(train_loader, desc="Train Batches", leave=False) 
+
+            for batch_idx, (batch_X_num, batch_X_cat, batch_Y) in enumerate(train_batches):
+                batch_X_num, batch_X_cat, batch_Y = batch_X_num.to(self.device), batch_X_cat.to(self.device), batch_Y.to(self.device)
                 
-                self.train()
-                train_loss = 0.0
-                train_batches = tqdm(train_loader, desc="Train Batches", leave=False) 
+                optimizer.zero_grad()
+                
+                with autocast():
+                    outputs = self.forward(batch_X_num, batch_X_cat)
+                    loss = criterion(outputs, batch_Y)
+                
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
 
-                for batch_idx, (batch_X_num, batch_X_cat, batch_Y) in enumerate(train_batches):
+                train_loss += loss.item()
+                train_batches.set_postfix({'Current Train Loss': loss.item()})
+            
+            train_loss /= len(train_loader)
+            print(f"Training Loss: {train_loss:.4f}", end=' ')
+            
+            self.eval()
+            val_loss = 0.0
+            all_preds = []
+            all_labels = []
+            val_batches = tqdm(val_loader, desc="Val Batches", leave=False)
+            
+            with torch.no_grad():
+                for batch_idx, (batch_X_num, batch_X_cat, batch_Y) in enumerate(val_batches):
                     batch_X_num, batch_X_cat, batch_Y = batch_X_num.to(self.device), batch_X_cat.to(self.device), batch_Y.to(self.device)
-                    
-                    optimizer.zero_grad()
                     
                     with autocast():
                         outputs = self.forward(batch_X_num, batch_X_cat)
                         loss = criterion(outputs, batch_Y)
                     
-                    scaler.scale(loss).backward()
-                    scaler.step(optimizer)
-                    scaler.update()
+                    val_loss += loss.item()
+                    all_preds.append(outputs.cpu().numpy())
+                    all_labels.append(batch_Y.cpu().numpy())
+                    val_batches.set_postfix({'Current Val Loss': loss.item()})
+            
+            val_loss /= len(val_loader)
+            all_preds = np.concatenate(all_preds)
+            all_labels = np.concatenate(all_labels)
+            val_rmse = mean_squared_error(all_labels, all_preds, squared=False)
+            print(f"Validation Loss: {val_loss:.4f}, Validation RMSE: {val_rmse:.4f}")
+            
+            if val_rmse < best_val_loss:
+                best_val_loss = val_rmse 
+                patience_counter = 0
+                self.save('checkpoints/tmp.pt')
+            else:
+                patience_counter += 1
+            
+            if patience_counter >= self.early_stopping_patience:
+                break
+            
+            scheduler.step()
 
-                    train_loss += loss.item()
-                    train_batches.set_postfix({'Current Train Loss': loss.item()})
-                
-                train_loss /= len(train_loader)
-                print(f"Training Loss: {train_loss:.4f}", end=' ')
-                
-                self.eval()
-                val_loss = 0.0
-                all_preds = []
-                all_labels = []
-                val_batches = tqdm(val_loader, desc="Val Batches", leave=False)
-                
-                with torch.no_grad():
-                    for batch_idx, (batch_X_num, batch_X_cat, batch_Y) in enumerate(val_batches):
-                        batch_X_num, batch_X_cat, batch_Y = batch_X_num.to(self.device), batch_X_cat.to(self.device), batch_Y.to(self.device)
-                        
-                        with autocast():
-                            outputs = self.forward(batch_X_num, batch_X_cat)
-                            loss = criterion(outputs, batch_Y)
-                        
-                        val_loss += loss.item()
-                        all_preds.append(outputs.cpu().numpy())
-                        all_labels.append(batch_Y.cpu().numpy())
-                        val_batches.set_postfix({'Current Val Loss': loss.item()})
-                
-                val_loss /= len(val_loader)
-                all_preds = np.concatenate(all_preds)
-                all_labels = np.concatenate(all_labels)
-                val_rmse = mean_squared_error(all_labels, all_preds, squared=False)
-                print(f"Validation Loss: {val_loss:.4f}, Validation RMSE: {val_rmse:.4f}")
-                
-                if val_rmse < best_val_loss:
-                    best_val_loss = val_rmse 
-                    patience_counter = 0
-                    self.save('checkpoints/tmp.pt')
-                else:
-                    patience_counter += 1
-                
-                if patience_counter >= self.early_stopping_patience:
-                    break
-                
-                scheduler.step()
+    def predict(self, X: pd.DataFrame):
+        """Inference."""
 
-        else:
-            raise ValueError("X_train and X_val must be pandas DataFrames")
-
-    def predict(self, X):
         self.eval()
         self.load('checkpoints/tmp.pt')
+
         with torch.no_grad():
-            X_num = X.select_dtypes(exclude=['object', 'category'])
+            X_num = X[self.num_columns]
             X_num_scaled = torch.tensor(np.concatenate([self.scaler.transform(X_num.drop(["oof"], axis=1).values), np.expand_dims(X_num["oof"].values, axis=1)], axis=1)).float().to(self.device)
 
             X_cat = X[self.cat_column_names].astype('category').apply(lambda x: x.cat.codes).values
@@ -381,16 +398,19 @@ class DNN(nn.Module):
             for X_num_batch, X_cat_batch in tqdm(data_loader):
                 preds = self.forward(X_num_batch, X_cat_batch)
                 predictions.append(preds.cpu().numpy())
+
             return np.squeeze(np.vstack(predictions))
 
-    def save(self, file_path):
+    def save(self, file_path: str):
+        """Save model checkpoint."""
         checkpoint = {
             'model_state_dict': self.state_dict(),
             'scaler': self.scaler,
         }
         joblib.dump(checkpoint, file_path)
 
-    def load(self, file_path):
+    def load(self, file_path: str):
+        """Load model from checkpoint."""
         checkpoint = joblib.load(file_path)
         self.load_state_dict(checkpoint['model_state_dict'])
         self.scaler = checkpoint['scaler']
@@ -1037,6 +1057,7 @@ class Solver:
                         if model_name == "catboost":
                             model.set_params(random_seed=58)
                             model.fit(X_tr_inner, y_tr_inner, eval_set=(X_va_inner, y_va_inner))
+                            
                         elif model_name == "lgbm":
                             model.fit(X_tr_inner, y_tr_inner,
                                 eval_set=[(X_va_inner, y_va_inner)],
@@ -1045,8 +1066,10 @@ class Solver:
                                     lgb.early_stopping(self.config.catboost_params["early_stopping_rounds"]),
                                     lgb.log_evaluation(self.config.catboost_params["verbose"])
                             ])
+
                         elif model_name == "xgboost":
                             model.fit(X_tr_inner, y_tr_inner, eval_set=[(X_va_inner, y_va_inner)], verbose=1000)
+
                         elif model_name == "DNN":
                             model.fit(X_tr_inner, y_tr_inner, X_va_inner, y_va_inner)
                     
@@ -1087,6 +1110,15 @@ class Solver:
                         train_pool = Pool(X_train, Y_train, cat_features=catcols)
                         valid_pool = Pool(X_valid_src, Y_valid_src, cat_features=catcols)
                     model.fit(train_pool, eval_set=valid_pool)
+
+                elif model_name == "lgbm":
+                    model.fit(X_train, Y_train,
+                        eval_set=[(X_valid_src, Y_valid_src)],
+                        eval_metric='rmse',
+                        callbacks=[
+                            lgb.early_stopping(self.config.catboost_params["early_stopping_rounds"]),
+                            lgb.log_evaluation(self.config.catboost_params["verbose"])
+                    ])
                     
                 elif model_name == "xgboost":
                     model.fit(X_train, Y_train, eval_set=[(X_valid_src, Y_valid_src)], verbose=1000)
