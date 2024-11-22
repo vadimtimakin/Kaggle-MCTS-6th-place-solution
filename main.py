@@ -16,17 +16,19 @@ import xgboost as xgb
 import lightgbm as lgb
 from catboost import CatBoostRegressor, CatBoostClassifier, Pool
 
+import math
 import torch
 import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
+from torch.cuda.amp import autocast, GradScaler
 from torch.utils.data import DataLoader, TensorDataset
 
 from sklearn.base import clone
 from sklearn.metrics import mean_squared_error
 from sklearn.model_selection import StratifiedGroupKFold
 from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.preprocessing import StandardScaler, OneHotEncoder, QuantileTransformer
+from sklearn.preprocessing import StandardScaler, OneHotEncoder, LabelEncoder, QuantileTransformer
 
 import joblib
 from tqdm import tqdm
@@ -37,6 +39,11 @@ import sys
 sys.path.append('/home/toefl/K/MCTS/openfe')
 sys.path.append('/home/toefl/K/MCTS/dataset/')
 sys.path.append('/kaggle/input/openfe-modified')
+
+try:
+    from optimizer import Ranger, MADGRAD
+except ImportError:
+    pass
 
 from openfe import transform
 import kaggle_evaluation.mcts_inference_server
@@ -92,7 +99,7 @@ class Config:
     n_openfe_features = (0, 500, 0)
     n_tf_ids_features = 0
 
-    use_oof = False
+    use_oof = True
     use_baseline_scores = False
     show_shap = False
     mask_filter = False
@@ -148,9 +155,9 @@ class Config:
 
     dnn_params = {
         "output_size": 1,
-        "epochs": 10,
+        "epochs": 20,
         "batch_size": 1024,
-        "learning_rate": 0.001,
+        "learning_rate": 0.003,
         "device": "cuda",
     }
     
@@ -199,59 +206,76 @@ class DNN(nn.Module):
         self.output_size = output_size
         self.embeddings = None
         self.scaler = None
+        self.cat_scaler = None
         self.input_size = 0
         self.cat_column_names = []
 
     def _build_model(self):
-        return nn.Sequential(
-            nn.Linear(self.input_size, 1024),
+        num_numerical_features = len(self.num_columns)
+
+        self.embedding_mlp = nn.Embedding(sum(self.field_dims), 128)
+
+        input_dim = (len(self.field_dims) * 128) + num_numerical_features  
+        print("DNN input_dim |", input_dim)
+
+        self.mlp = nn.Sequential(
+            nn.Linear(input_dim, 2048),
+            nn.BatchNorm1d(2048),
+            nn.Hardswish(),
+
+            nn.Dropout(0.9),
+            nn.Linear(2048, 1024),
             nn.BatchNorm1d(1024),
-            nn.ReLU(),
+            nn.Hardswish(),
+
+            nn.Dropout(0.9),
             nn.Linear(1024, 512),
             nn.BatchNorm1d(512),
-            nn.ReLU(),
+            nn.Hardswish(),
+
+            nn.Dropout(0.9),
             nn.Linear(512, 256),
             nn.BatchNorm1d(256),
-            nn.ReLU(),
+            nn.Hardswish(),
+
+            nn.Dropout(0.9),
             nn.Linear(256, 128),
             nn.BatchNorm1d(128),
-            nn.ReLU(),
-            nn.Linear(128, self.output_size)
-        ).to(self.device)
-        
-    def forward(self, x_num, x_cat):
-        x_embed = self.embedding_layer(x_cat)  
-        x_embed = x_embed.view(x_embed.size(0), -1) 
-        
-        x = torch.cat([x_num, x_embed], dim=1)
+            nn.Hardswish(),
 
-        return self.model(x)
+            nn.Linear(128, 1),
+        )
+
+    def forward(self, x_num, x_cat):
+       
+        mlp_embed_x = self.embedding_mlp(x_cat)
+        mlp_x = torch.cat([mlp_embed_x.view(mlp_embed_x.size(0), -1), x_num], dim=1)
+        mlp_out = self.mlp(mlp_x)
+
+        return mlp_out
 
     def fit(self, X_train, Y_train, X_val, Y_val):
         if isinstance(X_train, pd.DataFrame) and isinstance(X_val, pd.DataFrame):
            
             self.cat_column_names = X_train.select_dtypes(include=['object', 'category']).columns.tolist()
-            num_columns = X_train.select_dtypes(exclude=['object', 'category']).columns.tolist()
+            self.num_columns = X_train.select_dtypes(exclude=['object', 'category']).columns.tolist()
+            self.field_dims = [X_train[col].nunique() for col in self.cat_column_names]
 
-            categorical_dims = [X_train[col].nunique() for col in self.cat_column_names]
-            embedding_dim = 256
+            self._build_model() 
+            self.to(self.device)
 
-            embedding_input_dim = sum(categorical_dims)
-            self.embedding_layer = nn.EmbeddingBag(embedding_input_dim, embedding_dim, mode='sum').to(self.device)
-
-            self.input_size = embedding_dim + len(num_columns)
-            self.model = self._build_model() 
-
-            X_train_num = X_train[num_columns].values
-            X_val_num = X_val[num_columns].values
+            X_train_num = X_train[self.num_columns]
+            X_val_num = X_val[self.num_columns]
 
             self.scaler = QuantileTransformer()
-            self.scaler.fit(X_train_num)
-            X_train_num_scaled = torch.tensor(self.scaler.transform(X_train_num)).float().to(self.device)
-            X_val_num_scaled = torch.tensor(self.scaler.transform(X_val_num)).float().to(self.device)
+            self.scaler.fit(X_train_num.drop(["oof"], axis=1).values)
+
+            X_train_num_scaled = torch.tensor(np.concatenate([self.scaler.transform(X_train_num.drop(["oof"], axis=1).values), np.expand_dims(X_train_num["oof"].values, axis=1)], axis=1)).float().to(self.device)
+            X_val_num_scaled = torch.tensor(np.concatenate([self.scaler.transform(X_val_num.drop(["oof"], axis=1).values), np.expand_dims(X_val_num["oof"].values, axis=1)], axis=1)).float().to(self.device)
 
             X_train_cat = X_train[self.cat_column_names].astype('category').apply(lambda x: x.cat.codes)
             X_val_cat = X_val[self.cat_column_names].astype('category').apply(lambda x: x.cat.codes)
+
             X_train_cat_tensor = torch.tensor(X_train_cat.values).long().to(self.device)
             X_val_cat_tensor = torch.tensor(X_val_cat.values).long().to(self.device)
 
@@ -265,27 +289,35 @@ class DNN(nn.Module):
             val_loader = DataLoader(val_dataset, batch_size=self.batch_size, shuffle=False)
 
             criterion = lambda outputs, targets: torch.sqrt(nn.MSELoss()(outputs, targets))
-            optimizer = optim.Adam(self.parameters(), lr=self.learning_rate)
+            optimizer = MADGRAD(self.parameters(), lr=self.learning_rate)
             scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=self.epochs, eta_min=1e-8)
+
+            scaler = GradScaler()
 
             best_val_loss = np.inf
             patience_counter = 0
 
             for epoch in range(self.epochs):
-                print(f"\nEpoch {epoch + 1}/{self.epochs}", end=' | ')
+                print(f"\nEpoch {epoch + 1}/{self.epochs}")
                 
                 self.train()
                 train_loss = 0.0
                 train_batches = tqdm(train_loader, desc="Train Batches", leave=False) 
+
                 for batch_idx, (batch_X_num, batch_X_cat, batch_Y) in enumerate(train_batches):
+                    batch_X_num, batch_X_cat, batch_Y = batch_X_num.to(self.device), batch_X_cat.to(self.device), batch_Y.to(self.device)
+                    
                     optimizer.zero_grad()
-                    outputs = self.forward(batch_X_num, batch_X_cat)
-                    loss = criterion(outputs, batch_Y)
-                    loss.backward()
-                    optimizer.step()
+                    
+                    with autocast():
+                        outputs = self.forward(batch_X_num, batch_X_cat)
+                        loss = criterion(outputs, batch_Y)
+                    
+                    scaler.scale(loss).backward()
+                    scaler.step(optimizer)
+                    scaler.update()
 
                     train_loss += loss.item()
-                    
                     train_batches.set_postfix({'Current Train Loss': loss.item()})
                 
                 train_loss /= len(train_loader)
@@ -295,47 +327,48 @@ class DNN(nn.Module):
                 val_loss = 0.0
                 all_preds = []
                 all_labels = []
-                val_batches = tqdm(val_loader, desc="Val Batches", leave=False) 
-
+                val_batches = tqdm(val_loader, desc="Val Batches", leave=False)
+                
                 with torch.no_grad():
                     for batch_idx, (batch_X_num, batch_X_cat, batch_Y) in enumerate(val_batches):
-                        outputs = self.forward(batch_X_num, batch_X_cat)
-                        loss = criterion(outputs, batch_Y)
+                        batch_X_num, batch_X_cat, batch_Y = batch_X_num.to(self.device), batch_X_cat.to(self.device), batch_Y.to(self.device)
+                        
+                        with autocast():
+                            outputs = self.forward(batch_X_num, batch_X_cat)
+                            loss = criterion(outputs, batch_Y)
+                        
                         val_loss += loss.item()
-
                         all_preds.append(outputs.cpu().numpy())
                         all_labels.append(batch_Y.cpu().numpy())
-
                         val_batches.set_postfix({'Current Val Loss': loss.item()})
                 
                 val_loss /= len(val_loader)
-
                 all_preds = np.concatenate(all_preds)
                 all_labels = np.concatenate(all_labels)
                 val_rmse = mean_squared_error(all_labels, all_preds, squared=False)
                 print(f"Validation Loss: {val_loss:.4f}, Validation RMSE: {val_rmse:.4f}")
                 
-                if val_loss < best_val_loss:
-                    best_val_loss = val_loss
+                if val_rmse < best_val_loss:
+                    best_val_loss = val_rmse 
                     patience_counter = 0
-                    self.best_model_state = self.state_dict()
+                    self.save('checkpoints/tmp.pt')
                 else:
                     patience_counter += 1
-
+                
                 if patience_counter >= self.early_stopping_patience:
                     break
                 
                 scheduler.step()
 
-            self.save('checkpoints/tmp.pt')
         else:
             raise ValueError("X_train and X_val must be pandas DataFrames")
 
     def predict(self, X):
         self.eval()
+        self.load('checkpoints/tmp.pt')
         with torch.no_grad():
-            X_num = X.select_dtypes(exclude=['object', 'category']).values
-            X_num_scaled = torch.tensor(self.scaler.transform(X_num)).float().to(self.device)
+            X_num = X.select_dtypes(exclude=['object', 'category'])
+            X_num_scaled = torch.tensor(np.concatenate([self.scaler.transform(X_num.drop(["oof"], axis=1).values), np.expand_dims(X_num["oof"].values, axis=1)], axis=1)).float().to(self.device)
 
             X_cat = X[self.cat_column_names].astype('category').apply(lambda x: x.cat.codes).values
             X_cat_tensor = torch.tensor(X_cat).long().to(self.device)
@@ -352,7 +385,7 @@ class DNN(nn.Module):
 
     def save(self, file_path):
         checkpoint = {
-            'model_state_dict': self.best_model_state,
+            'model_state_dict': self.state_dict(),
             'scaler': self.scaler,
         }
         joblib.dump(checkpoint, file_path)
