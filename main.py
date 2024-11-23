@@ -56,7 +56,7 @@ warnings.filterwarnings('ignore')
 
 IS_TRAIN = True
 LOCAL = True
-IS_RERUN = True
+IS_RERUN = False
 
 
 # --- Config ---
@@ -79,8 +79,8 @@ class Config:
     path_to_load_features = 'feature.pickle' if LOCAL else '/kaggle/input/mcts-solution-checkpoint/feature.pickle'
     path_to_tfidf = '/home/toefl/K/MCTS/dataset/tf_idf' if LOCAL else '/kaggle/input/mcts-solution-checkpoint/tf_idf'
 
-    path_to_save_data_checkpoint = 'checkpoints/data_checkpoint_xgboost_5fold'     # Drop columns, categorical columns, etc.
-    path_to_save_solver_checkpoint = 'checkpoints/solver_checkpoint_xgboost_5fold' # Models, weights, etc.
+    path_to_save_data_checkpoint = 'checkpoints/data_checkpoint_dnn_embeddings_5fold'     # Drop columns, categorical columns, etc.
+    path_to_save_solver_checkpoint = 'checkpoints/solver_checkpoint_dnn_embeddings_5fold' # Models, weights, etc.
 
     path_to_load_data_checkpoint = 'checkpoints/data_checkpoint_xgboost_5fold' if LOCAL else '/kaggle/input/mcts-solution-checkpoint/data_checkpoint.pickle'
     path_to_load_solver_checkpoint = {
@@ -100,10 +100,11 @@ class Config:
     n_tf_ids_features = 0
 
     use_oof = True
+    use_dnn_embeddings = False
     use_baseline_scores = False
     show_shap = False
     mask_filter = False
-    stacked = False
+    stacked = True
     
     catboost_params = {
         'iterations': 30000,
@@ -155,7 +156,7 @@ class Config:
 
     dnn_params = {
         "output_size": 1,
-        "epochs": 20,
+        "epochs": 1,
         "batch_size": 1024,
         "learning_rate": 0.003,
         "embedding_size": 128,
@@ -246,18 +247,22 @@ class DNN(nn.Module):
             nn.Linear(256, 128),
             nn.BatchNorm1d(128),
             nn.Hardswish(),
-
             nn.Linear(128, 1),
         )
 
-    def forward(self, x_num, x_cat):
+    def forward(self, x_num, x_cat, return_embeddings=False):
         """Forward function."""
 
         mlp_embed_x = self.embedding_mlp(x_cat)
-        mlp_x = torch.cat([mlp_embed_x.view(mlp_embed_x.size(0), -1), x_num], dim=1)
+        mlp_embed_x = mlp_embed_x.view(mlp_embed_x.size(0), -1)
+        mlp_x = torch.cat([mlp_embed_x, x_num], dim=1)
         mlp_out = self.mlp(mlp_x)
 
-        return mlp_out
+        if return_embeddings:
+            embeddings = self.mlp[:-1](mlp_x)
+            return mlp_out, embeddings
+        else:
+            return mlp_out
 
     def fit(self, X_train: pd.DataFrame, Y_train: pd.DataFrame, X_val: pd.DataFrame, Y_val: pd.DataFrame):
         """Training."""
@@ -379,7 +384,7 @@ class DNN(nn.Module):
 
         self.load('checkpoints/tmp.pt')
 
-    def predict(self, X: pd.DataFrame):
+    def predict(self, X: pd.DataFrame, return_embeddings=False):
         """Inference."""
 
         self.eval()
@@ -394,13 +399,21 @@ class DNN(nn.Module):
             dataset = TensorDataset(X_num_scaled, X_cat_tensor)
             data_loader = DataLoader(dataset, batch_size=self.batch_size, shuffle=False)
 
-            predictions = []
+            predictions, total_embeddings = [], []
             print('Prediction')
             for X_num_batch, X_cat_batch in tqdm(data_loader):
-                preds = self.forward(X_num_batch, X_cat_batch)
-                predictions.append(preds.cpu().numpy())
+                if return_embeddings:
+                    preds, embeddings = self.forward(X_num_batch, X_cat_batch, return_embeddings)
+                    predictions.append(preds.cpu().numpy())
+                    total_embeddings.append(embeddings.cpu().numpy())
+                else:
+                    preds = self.forward(X_num_batch, X_cat_batch, return_embeddings)
+                    predictions.append(preds.cpu().numpy())
 
-            return np.squeeze(np.vstack(predictions))
+            if return_embeddings:
+                return np.squeeze(np.vstack(predictions)), np.squeeze(np.vstack(total_embeddings))
+            else:
+                return np.squeeze(np.vstack(predictions))
 
     def save(self, file_path: str):
         """Save model checkpoint."""
@@ -885,7 +898,7 @@ class Dataset:
                 self.data_checkpoint = pickle.load(f)
 
             cat_cols = self.data_checkpoint["catcols"] + ["data_mode", "GameRulesetName"]
-            cat_mapping = {f: "category" if f in cat_cols else float for f in df.columns}
+            cat_mapping = {f: "str" if f in cat_cols else float for f in df.columns}
             df = df.astype(cat_mapping)
 
         else:
@@ -896,6 +909,12 @@ class Dataset:
             df = self.postprocessing(df)
             df = self.reduce_mem_usage(df)
             self.save_data_checkpoint(df)
+
+        if self.config.use_dnn_embeddings:
+            embeddings_df = pd.read_csv('checkpoints/oof_cat_embeddings.csv')
+            df[list(embeddings_df.columns)] = embeddings_df[list(embeddings_df.columns)]
+            
+        print(df)
         
         return df, self.data_checkpoint
     
@@ -965,6 +984,8 @@ class Solver:
 
         if model_name == "catboost":
             feature_importances = None
+
+        oof_embeddings = None
 
         for fold in range(self.config.n_splits):    
             
@@ -1049,6 +1070,7 @@ class Solver:
                 oof_inner = np.zeros_like(Y_train)
                 oof_valid = np.zeros_like(Y_valid)
                 oof_valid_src = np.zeros_like(Y_valid_src)
+                embeddings = None 
 
                 for inner_fold, (idx_tr_inner, idx_va_inner) in enumerate(inner_split):
                     print(f"Inner fold {inner_fold}.")
@@ -1059,7 +1081,11 @@ class Solver:
                     y_va_inner = Y_train.iloc[idx_va_inner]
 
                     if not self.rerun:
-                        model = clone(base_model)
+
+                        if model_name == "DNN":
+                            model = DNN(**self.config.dnn_params)
+                        else:
+                            model = clone(base_model)
 
                         if model_name == "catboost":
                             model.set_params(random_seed=58)
@@ -1089,11 +1115,31 @@ class Solver:
                             model = pickle.load(f)
 
                     y_pred = model.predict(X_va_inner)
-                    oof_valid += model.predict(X_valid) / self.config.n_splits
-                    oof_valid_src += model.predict(X_valid_src) / self.config.n_splits
                     oof_inner[idx_va_inner] += y_pred
 
+                    outer_preds, embeds = model.predict(X_valid, return_embeddings=True) 
+                    oof_valid += outer_preds / self.config.n_splits
+
+                    if embeddings is None:
+                        embeddings = embeds / self.config.n_splits
+                    else:
+                        embeddings += embeds / self.config.n_splits
+
+                    oof_valid_src += model.predict(X_valid_src) / self.config.n_splits
+
                     del model
+
+                embeddings_df = pd.DataFrame(
+                    embeddings, columns=[f"emb_{i}" for i in range(embeddings.shape[1])]
+                )
+                embeddings_df["index"] = valid_index 
+                
+                if oof_embeddings is None:
+                    oof_embeddings = embeddings_df
+                else:
+                    oof_embeddings = pd.concat([oof_embeddings, embeddings_df])
+
+                print("DNN embeddings shape |", embeddings.shape)
 
                 X_train['oof_feature'] = oof_inner
                 X_valid['oof_feature'] = oof_valid
@@ -1152,12 +1198,15 @@ class Solver:
                     else:
                         preds = model.predict(Pool(X_valid_src, cat_features=catcols))
                         full_preds = model.predict(Pool(X_valid, cat_features=catcols))
+
             elif model_name == "lgbm":
                 preds = model.predict(X_valid_src)
                 full_preds = model.predict(X_valid)
+
             elif model_name == "xgboost":
                 preds = model.predict(X_valid_src)
                 full_preds = model.predict(X_valid)
+
             elif model_name == "DNN":
                 preds = model.predict(X_valid_src)
                 full_preds = model.predict(X_valid)
@@ -1233,6 +1282,9 @@ class Solver:
             feature_importances.to_csv('dataset/feature_importance.csv')
         else:
             feature_importances = None
+
+        if model_name == "DNN":
+            oof_embeddings.sort_values(by="index").drop(["index"], axis=1).to_csv('checkpoints/oof_cat_embeddings.csv', index=False)
         
         return oof_labels, oof_preds, feature_importances
             
