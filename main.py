@@ -79,8 +79,8 @@ class Config:
     path_to_load_features = 'feature.pickle' if LOCAL else '/kaggle/input/mcts-solution-checkpoint/feature.pickle'
     path_to_tfidf = '/home/toefl/K/MCTS/dataset/tf_idf' if LOCAL else '/kaggle/input/mcts-solution-checkpoint/tf_idf'
 
-    path_to_save_data_checkpoint = 'checkpoints/data_checkpoint_dnn_embeddings_5fold'     # Drop columns, categorical columns, etc.
-    path_to_save_solver_checkpoint = 'checkpoints/solver_checkpoint_dnn_embeddings_5fold' # Models, weights, etc.
+    path_to_save_data_checkpoint = 'checkpoints/data_checkpoint_xgboost_5fold'     # Drop columns, categorical columns, etc.
+    path_to_save_solver_checkpoint = 'checkpoints/solver_checkpoint_xgboost_5fold' # Models, weights, etc.
 
     path_to_load_data_checkpoint = 'checkpoints/data_checkpoint_xgboost_5fold' if LOCAL else '/kaggle/input/mcts-solution-checkpoint/data_checkpoint.pickle'
     path_to_load_solver_checkpoint = {
@@ -162,6 +162,7 @@ class Config:
         "embedding_size": 128,
         "device": "cuda",
         "early_stopping_patience": 10,
+        "kd_alpha": 0.5,
     }
     
     to_train = {
@@ -194,10 +195,27 @@ def set_seed(SEED):
 
 # --- Custom DNN model ---
 
+class DistillationRMSELoss(nn.Module):
+    """
+    Knowledge Distillation Loss for Regression using RMSE.
+    """
+    def __init__(self, alpha=0.5):
+        super(DistillationRMSELoss, self).__init__()
+        self.alpha = alpha
+        self.mse_loss = nn.MSELoss()
+
+    def forward(self, student_outputs, teacher_outputs, target_labels):
+        ground_truth_loss = torch.sqrt(self.mse_loss(student_outputs, target_labels))
+        distillation_loss = torch.sqrt(self.mse_loss(student_outputs, teacher_outputs))
+        total_loss = self.alpha * distillation_loss + (1.0 - self.alpha) * ground_truth_loss
+        
+        return total_loss
+    
+
 class DNN(nn.Module):
 
     def __init__(self, output_size=1, epochs=100, batch_size=32, learning_rate=0.001, 
-                 embedding_size=128, device='cpu', early_stopping_patience=10):
+                 embedding_size=128, device='cpu', kd_alpha=0, early_stopping_patience=10):
         super(DNN, self).__init__()
 
         self.device = device
@@ -205,6 +223,7 @@ class DNN(nn.Module):
         self.batch_size = batch_size
         self.learning_rate = learning_rate
         self.embedding_size = embedding_size
+        self.kd_alpha = kd_alpha
         self.early_stopping_patience = early_stopping_patience
 
         self.output_size = output_size
@@ -289,6 +308,8 @@ class DNN(nn.Module):
         X_train_num_scaled = torch.tensor(np.concatenate([self.scaler.transform(X_train_num.drop(["oof"], axis=1).values), np.expand_dims(X_train_num["oof"].values, axis=1)], axis=1)).float().to(self.device)
         X_val_num_scaled = torch.tensor(np.concatenate([self.scaler.transform(X_val_num.drop(["oof"], axis=1).values), np.expand_dims(X_val_num["oof"].values, axis=1)], axis=1)).float().to(self.device)
 
+        teacher_preds_train = torch.tensor(X_train_num["oof"].values).float().to(self.device).unsqueeze(-1)
+
         # Process categorical columns.
 
         X_train_cat = X_train[self.cat_column_names].astype('category').apply(lambda x: x.cat.codes)
@@ -302,13 +323,14 @@ class DNN(nn.Module):
         Y_train_tensor = torch.tensor(Y_train.values).float().to(self.device).unsqueeze(-1)
         Y_val_tensor = torch.tensor(Y_val.values).float().to(self.device).unsqueeze(-1)
 
-        train_dataset = TensorDataset(X_train_num_scaled, X_train_cat_tensor, Y_train_tensor)
+        train_dataset = TensorDataset(X_train_num_scaled, X_train_cat_tensor, Y_train_tensor, teacher_preds_train)
         train_loader = DataLoader(train_dataset, batch_size=self.batch_size, shuffle=True)
 
         val_dataset = TensorDataset(X_val_num_scaled, X_val_cat_tensor, Y_val_tensor)
         val_loader = DataLoader(val_dataset, batch_size=self.batch_size, shuffle=False)
 
-        criterion = lambda outputs, targets: torch.sqrt(nn.MSELoss()(outputs, targets))
+        criterion = DistillationRMSELoss(alpha=self.kd_alpha)
+        criterion_val = lambda outputs, targets: torch.sqrt(nn.MSELoss()(outputs, targets))
         optimizer = MADGRAD(self.parameters(), lr=self.learning_rate)
         scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=self.epochs, eta_min=1e-8)
 
@@ -326,14 +348,14 @@ class DNN(nn.Module):
             train_loss = 0.0
             train_batches = tqdm(train_loader, desc="Train Batches", leave=False) 
 
-            for batch_idx, (batch_X_num, batch_X_cat, batch_Y) in enumerate(train_batches):
+            for batch_idx, (batch_X_num, batch_X_cat, batch_Y, teacher_outputs) in enumerate(train_batches):
                 batch_X_num, batch_X_cat, batch_Y = batch_X_num.to(self.device), batch_X_cat.to(self.device), batch_Y.to(self.device)
                 
                 optimizer.zero_grad()
                 
                 with autocast():
                     outputs = self.forward(batch_X_num, batch_X_cat)
-                    loss = criterion(outputs, batch_Y)
+                    loss = criterion(outputs, teacher_outputs, batch_Y)
                 
                 scaler.scale(loss).backward()
                 scaler.step(optimizer)
@@ -357,7 +379,7 @@ class DNN(nn.Module):
                     
                     with autocast():
                         outputs = self.forward(batch_X_num, batch_X_cat)
-                        loss = criterion(outputs, batch_Y)
+                        loss = criterion_val(outputs, batch_Y)
                     
                     val_loss += loss.item()
                     all_preds.append(outputs.cpu().numpy())
@@ -1283,7 +1305,7 @@ class Solver:
         else:
             feature_importances = None
 
-        if model_name == "DNN":
+        if model_name == "DNN" and oof_embeddings is not None:
             oof_embeddings.sort_values(by="index").drop(["index"], axis=1).to_csv('checkpoints/oof_cat_embeddings.csv', index=False)
         
         return oof_labels, oof_preds, feature_importances
