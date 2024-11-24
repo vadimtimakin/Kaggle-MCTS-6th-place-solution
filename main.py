@@ -99,12 +99,12 @@ class Config:
     n_openfe_features = (0, 500, 0)
     n_tf_ids_features = 0
 
-    use_oof = True
+    use_oof = False
     use_dnn_embeddings = False
     use_baseline_scores = False
     show_shap = False
     mask_filter = False
-    stacked = True
+    stacked = False
     
     catboost_params = {
         'iterations': 30000,
@@ -156,7 +156,7 @@ class Config:
 
     dnn_params = {
         "output_size": 1,
-        "epochs": 1,
+        "epochs": 20,
         "batch_size": 1024,
         "learning_rate": 0.003,
         "embedding_size": 128,
@@ -165,10 +165,10 @@ class Config:
     }
     
     to_train = {
-        "catboost": False,
+        "catboost": True,
         "lgbm": False,
         "xgboost": False,
-        "DNN": True,
+        "DNN": False,
     }
     
     weights = {
