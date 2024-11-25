@@ -54,8 +54,8 @@ warnings.filterwarnings('ignore')
 
 # --- Run mode ---
 
-IS_TRAIN = True
-LOCAL = True
+IS_TRAIN = False
+LOCAL = False
 IS_RERUN = False
 
 
@@ -76,20 +76,25 @@ class Config:
     
     path_to_train_dataset = '/home/toefl/K/MCTS/dataset/train.csv' if LOCAL else '/kaggle/input/um-game-playing-strength-of-mcts-variants/train.csv'
 
-    path_to_load_features = 'feature.pickle' if LOCAL else '/kaggle/input/mcts-solution-checkpoint/feature.pickle'
+    path_to_load_features = 'feature.pickle' if LOCAL else '/kaggle/input/openfe-modified/feature.pickle'
     path_to_tfidf = '/home/toefl/K/MCTS/dataset/tf_idf' if LOCAL else '/kaggle/input/mcts-solution-checkpoint/tf_idf'
 
-    path_to_save_data_checkpoint = 'checkpoints/data_checkpoint_xgboost_5fold'     # Drop columns, categorical columns, etc.
-    path_to_save_solver_checkpoint = 'checkpoints/solver_checkpoint_xgboost_5fold' # Models, weights, etc.
+    path_to_save_data_checkpoint = 'checkpoints/data_checkpoint_base'     # Drop columns, categorical columns, etc.
+    path_to_save_solver_checkpoint = 'checkpoints/solver_checkpoint_base' # Models, weights, etc.
 
-    path_to_load_data_checkpoint = 'checkpoints/data_checkpoint_xgboost_5fold' if LOCAL else '/kaggle/input/mcts-solution-checkpoint/data_checkpoint.pickle'
+    path_to_checkpoints = 'checkpoints/' if LOCAL else '/kaggle/input/mcts-solution-checkpoint/'
+    path_to_load_data_checkpoint = os.path.join(path_to_checkpoints, 'data_checkpoint.pickle')
     path_to_load_solver_checkpoint = {
-        "main": 'checkpoints/solver_checkpoint_xgboost_5fold' if LOCAL else '/kaggle/input/mcts-solution-checkpoint/solver_checkpoint_stacked',
-        "baseline": 'checkpoints/solver_checkpoint_stacked' if LOCAL else '/kaggle/input/mcts-solution-checkpoint/solver_checkpoint_stacked',
+        "catboost_classic": os.path.join(path_to_checkpoints, 'catboost_classic'),
+        "catboost_nested": os.path.join(path_to_checkpoints, 'catboost_nested'),
+        "catboost_oof": os.path.join(path_to_checkpoints, 'catboost_oof'),
+        "catboost_with_oof_baseline": os.path.join(path_to_checkpoints, 'catboost_with_oof_baseline'),
+        "lgbm_oof": os.path.join(path_to_checkpoints, 'catboost_classic'),
+        "dnn_oof": os.path.join(path_to_checkpoints, 'catboost_classic'),
     }
 
     path_to_save_dataset = 'checkpoints/dataset.csv'
-    load_dataset_checkpoint = True
+    load_dataset_checkpoint = False
     
     task = "regression"
     
@@ -171,13 +176,15 @@ class Config:
         "xgboost": False,
         "DNN": False,
     }
-    
-    weights = {
-        "catboost": 1,
-        "lgbm": 0,
-        "xgboost": 0,
-        "DNN": 0,
-    }
+
+    to_inference = [
+        "catboost_classic",
+        "catboost_nested",
+        "catboost_oof",
+        "catboost_with_oof_baseline",
+        "lgbm_oof",
+        "dnn_oof",
+    ]
 
 
 # --- Utils ---
@@ -851,7 +858,7 @@ class Dataset:
             self.data_checkpoint["catcols"] = catcols
         
         else:
-            catcols = self.data_checkpoint["catcols"]
+            catcols = self.data_checkpoint["catcols"] + ["GameRulesetName"]
             cat_mapping = {f: "category" if f in catcols else float for f in df.columns}
 
         df = df.astype(cat_mapping)
@@ -935,8 +942,9 @@ class Dataset:
         if self.config.use_dnn_embeddings:
             embeddings_df = pd.read_csv('checkpoints/oof_cat_embeddings.csv')
             df[list(embeddings_df.columns)] = embeddings_df[list(embeddings_df.columns)]
-            
-        print(df)
+        
+        if self.config.is_train:
+            print(df)
         
         return df, self.data_checkpoint
     
@@ -952,6 +960,16 @@ class Solver:
         self.config = config
         self.rerun = rerun
         self.models = {}
+
+        if not config.is_train:
+            print("Loading checkpoints for inference.")
+            for checkpoint in tqdm(config.to_inference):
+                self.models[checkpoint] = []
+                model_paths = os.listdir(config.path_to_load_solver_checkpoint[checkpoint])
+                for path in model_paths:
+                    with open(os.path.join(config.path_to_load_solver_checkpoint[checkpoint], path), 'rb') as file:
+                        model = pickle.load(file)
+                        self.models[checkpoint].append(model)
 
     def generate_TF_IDF(self, df, mode, fold, n_tf_ids_features):
         """Generate TF-IDF features."""
@@ -1364,24 +1382,82 @@ class Solver:
             X = self.generate_TF_IDF(X, mode='test', fold=0, n_tf_ids_features=self.config.n_tf_ids_features)
             print('Shape with TF-IDF features', X.shape)
 
-        # Inference | Main.
+        # Process data.
+
+        X = X.drop(["GameRulesetName"], axis=1)
+
+        # Inference.
+        # Order is important.
+        # Weights from Ridge.
 
         prediction = np.zeros(len(X))
+
+        # Catboost classic.
         
-        for model_name, weight in self.config.weights.items():
-            
-            if model_name not in self.models or weight == 0: continue
-            
-            preds = np.zeros(len(X))
+        model_name = "catboost_classic"
 
-            for fold in range(self.config.n_splits):    
+        preds = np.zeros(len(X))
+        for model in self.models[model_name]:    
+            preds += model.predict(X) / len(self.models[model_name])
 
-                model = self.models[model_name]["models"][fold]
-                    
-                preds += model.predict(X) / self.config.n_splits
+        prediction += np.clip(preds, -1, 1) * 0.56566558
 
-            prediction += np.clip(preds, -1, 1) * weight
-            
+        # Catboost nested.
+        
+        model_name = "catboost_nested"
+
+        preds = np.zeros(len(X))
+        for model in self.models[model_name]:    
+            preds += model.predict(X) / len(self.models[model_name])
+
+        prediction += np.clip(preds, -1, 1) * 0
+        X["oof"] = np.clip(preds, -1, 1)
+
+        # Catboost OOF.
+        
+        model_name = "catboost_oof"
+
+        preds = np.zeros(len(X))
+        for model in self.models[model_name]:    
+            preds += model.predict(X) / len(self.models[model_name])
+
+        prediction += np.clip(preds, -1, 1) * 0
+
+        # LGBM OOF.
+        
+        model_name = "lgbm_oof"
+
+        preds = np.zeros(len(X))
+        for model in self.models[model_name]:    
+            preds += model.predict(X) / len(self.models[model_name])
+
+        prediction += np.clip(preds, -1, 1) * 0.05761242
+        # DNN OOF.
+        
+        model_name = "dnn_oof"
+
+        preds = np.zeros(len(X))
+        for model in self.models[model_name]:    
+            preds += model.predict(X) / len(self.models[model_name])
+
+        prediction += np.clip(preds, -1, 1) * 0.00826429
+
+        # Catboost with baseline initialization.
+        
+        model_name = "catboost_with_oof_baseline"
+
+        preds = np.zeros(len(X))
+        for model in self.models[model_name]:    
+            preds += model.predict(
+                Pool(
+                    X.drop(["oof"], axis=1),
+                    baseline=X["oof"],
+                    cat_features=data_checkpoint["catcols"]
+                )
+            ) / len(self.models[model_name])
+
+        prediction += np.clip(preds, -1, 1) * 0.43124984
+
         return prediction
    
 
@@ -1411,8 +1487,7 @@ if not IS_TRAIN:
     dataset = Dataset(config, rerun=False)
     solver = Solver(config, rerun=False)
 
-    df_train = pl.read_csv(config.path_to_train_dataset)
-    df_train, _ = dataset.get_dataset(df_train)
+    df_train = None  # Not used, set to None to save RAM.
 
     def predict(test: pl.DataFrame, sample_sub: pl.DataFrame) -> pl.DataFrame:
         """Inference function."""
